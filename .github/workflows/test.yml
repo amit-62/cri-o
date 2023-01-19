@@ -27,6 +27,8 @@ jobs:
       - run: scripts/github-actions-packages
       - run: make
       - run: bin/crio version
+      - run: make bin/crio.cross.linux.amd64
+      - run: bin/crio.cross.linux.amd64 version
       - uses: actions/upload-artifact@v3
         with:
           name: build
@@ -366,6 +368,11 @@ jobs:
             ~/.cache/go-build
           key: go-build-${{ hashFiles('**/go.sum') }}
           restore-keys: go-build-
+      - name: Set current branch
+        run: |
+          raw=$(git branch -r --contains ${{ github.ref }})
+          branch=${raw##*/}
+          echo "CURRENT_BRANCH=$branch" >> $GITHUB_ENV
       - run: make release-notes
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
