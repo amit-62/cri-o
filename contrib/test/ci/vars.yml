@@ -14,7 +14,7 @@ use_conmonrs: '{{ USE_CONMONRS | default(False) | bool }}'
 
 critest_mirror_repo: quay.io/crio
 cri_tools_git_version: "v1.26.0"
-golang_version: "1.19"
+golang_version: "1.20"
 
 # For results.yml Paths use rsync 'source' conventions
 artifacts: "/tmp/artifacts"  # Base-directory for collection
@@ -41,10 +41,6 @@ crun_test_env:
 # for ssh ID generation
 ssh_user: "{{ lookup('env','USER') }}"
 ssh_location: "{{ lookup('env','HOME') }}/.ssh/id_rsa"
-
-# Additional environment variables for integration tests w/ userNS enabled
-userns_int_test_env:
-    TEST_USERNS: "1"  # Consumed by test/test_runner.sh, by way of Makefile
 
 kata_int_test_env:
     CONTAINER_RUNTIMES: "containerd-shim-kata-v2:/usr/bin/containerd-shim-kata-v2:/run/vc:vm"

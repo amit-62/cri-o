@@ -231,6 +231,16 @@ func (s *Server) CRImportCheckpoint(
 		containerConfig.Linux.SecurityContext = createConfig.Linux.SecurityContext
 	}
 
+	if dumpSpec.Linux != nil {
+		if dumpSpec.Linux.MaskedPaths != nil {
+			containerConfig.Linux.SecurityContext.MaskedPaths = dumpSpec.Linux.MaskedPaths
+		}
+
+		if dumpSpec.Linux.ReadonlyPaths != nil {
+			containerConfig.Linux.SecurityContext.ReadonlyPaths = dumpSpec.Linux.ReadonlyPaths
+		}
+	}
+
 	ignoreMounts := map[string]bool{
 		"/proc":              true,
 		"/dev":               true,
@@ -348,6 +358,7 @@ func (s *Server) CRImportCheckpoint(
 	newContainer.SetRestore(true)
 	newContainer.SetRestoreArchive(input)
 	newContainer.SetRestoreIsOCIImage(checkpointIsOCIImage)
+	newContainer.SetCheckpointedAt(config.CheckpointedAt)
 
 	if ctx.Err() == context.Canceled || ctx.Err() == context.DeadlineExceeded {
 		log.Infof(ctx, "RestoreCtr: context was either canceled or the deadline was exceeded: %v", ctx.Err())

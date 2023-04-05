@@ -266,6 +266,11 @@ func initCrioTemplateConfig(c *Config) ([]*templateConfigValue, error) {
 			isDefaultValue: simpleEqual(dc.IrqBalanceConfigFile, c.IrqBalanceConfigFile),
 		},
 		{
+			templateString: templateStringCrioRuntimeIrqBalanceConfigRestoreFile,
+			group:          crioRuntimeConfig,
+			isDefaultValue: simpleEqual(dc.IrqBalanceConfigRestoreFile, c.IrqBalanceConfigRestoreFile),
+		},
+		{
 			templateString: templateStringCrioRuntimeRdtConfigFile,
 			group:          crioRuntimeConfig,
 			isDefaultValue: simpleEqual(dc.RdtConfigFile, c.RdtConfigFile),
@@ -446,6 +451,11 @@ func initCrioTemplateConfig(c *Config) ([]*templateConfigValue, error) {
 			isDefaultValue: WorkloadsEqual(dc.Workloads, c.Workloads),
 		},
 		{
+			templateString: templateStringCrioRuntimeHostNetworkDisableSELinux,
+			group:          crioRuntimeConfig,
+			isDefaultValue: simpleEqual(dc.HostNetworkDisableSELinux, c.HostNetworkDisableSELinux),
+		},
+		{
 			templateString: templateStringCrioImageDefaultTransport,
 			group:          crioImageConfig,
 			isDefaultValue: simpleEqual(dc.DefaultTransport, c.DefaultTransport),
@@ -561,11 +571,6 @@ func initCrioTemplateConfig(c *Config) ([]*templateConfigValue, error) {
 			isDefaultValue: simpleEqual(dc.NRI.Enabled, c.NRI.Enabled),
 		},
 		{
-			templateString: templateStringCrioNRIConfigPath,
-			group:          crioNRIConfig,
-			isDefaultValue: simpleEqual(dc.NRI.ConfigPath, c.NRI.ConfigPath),
-		},
-		{
 			templateString: templateStringCrioNRISocketPath,
 			group:          crioNRIConfig,
 			isDefaultValue: simpleEqual(dc.NRI.SocketPath, c.NRI.SocketPath),
@@ -574,6 +579,26 @@ func initCrioTemplateConfig(c *Config) ([]*templateConfigValue, error) {
 			templateString: templateStringCrioNRIPluginDir,
 			group:          crioNRIConfig,
 			isDefaultValue: simpleEqual(dc.NRI.PluginPath, c.NRI.PluginPath),
+		},
+		{
+			templateString: templateStringCrioNRIPluginConfigDir,
+			group:          crioNRIConfig,
+			isDefaultValue: simpleEqual(dc.NRI.PluginPath, c.NRI.PluginPath),
+		},
+		{
+			templateString: templateStringCrioNRIDisableConnections,
+			group:          crioNRIConfig,
+			isDefaultValue: simpleEqual(dc.NRI.DisableConnections, c.NRI.DisableConnections),
+		},
+		{
+			templateString: templateStringCrioNRIPluginRegistrationTimeout,
+			group:          crioNRIConfig,
+			isDefaultValue: simpleEqual(dc.NRI.PluginRegistrationTimeout, c.NRI.PluginRegistrationTimeout),
+		},
+		{
+			templateString: templateStringCrioNRIPluginRequestTimeout,
+			group:          crioNRIConfig,
+			isDefaultValue: simpleEqual(dc.NRI.PluginRequestTimeout, c.NRI.PluginRequestTimeout),
 		},
 	}
 
@@ -1066,6 +1091,13 @@ const templateStringCrioRuntimeDropInfraCtr = `# drop_infra_ctr determines wheth
 
 `
 
+const templateStringCrioRuntimeIrqBalanceConfigRestoreFile = `# irqbalance_config_restore_file allows to set a cpu mask CRI-O should
+# restore as irqbalance config at startup. Set to empty string to disable this flow entirely.
+# By default, CRI-O manages the irqbalance configuration to enable dynamic IRQ pinning.
+{{ $.Comment }}irqbalance_config_restore_file = "{{ .IrqBalanceConfigRestoreFile }}"
+
+`
+
 const templateStringCrioRuntimeInfraCtrCpuset = `# infra_ctr_cpuset determines what CPUs will be used to run infra containers.
 # You can use linux CPU list format to specify desired CPUs.
 # To get better isolation for guaranteed pods, set this parameter to be equal to kubelet reserved-cpus.
@@ -1238,6 +1270,13 @@ const templateStringCrioRuntimeWorkloads = `# The workloads table defines ways t
 {{ $.Comment }}cpuset = "{{ $workload_config.Resources.CPUSet }}"
 {{ $.Comment }}cpushares = {{ $workload_config.Resources.CPUShares }}{{ end }}
 {{ end }}
+`
+
+const templateStringCrioRuntimeHostNetworkDisableSELinux = `# hostnetwork_disable_selinux determines whether
+# SELinux should be disabled within a pod when it is running in the host network namespace
+# Default value is set to true
+{{ $.Comment }}hostnetwork_disable_selinux = {{ .HostNetworkDisableSELinux }}
+
 `
 
 const templateStringCrioImage = `# The crio.image table contains settings pertaining to the management of OCI images.
@@ -1418,11 +1457,6 @@ const templateStringCrioNRIEnable = `# Globally enable or disable NRI.
 
 `
 
-const templateStringCrioNRIConfigPath = `# NRI configuration file to use.
-{{ $.Comment }}nri_config_file = "{{ .NRI.ConfigPath }}"
-
-`
-
 const templateStringCrioNRISocketPath = `# NRI socket to listen on.
 {{ $.Comment }}nri_listen = "{{ .NRI.SocketPath }}"
 
@@ -1430,5 +1464,25 @@ const templateStringCrioNRISocketPath = `# NRI socket to listen on.
 
 const templateStringCrioNRIPluginDir = `# NRI plugin directory to use.
 {{ $.Comment }}nri_plugin_dir = "{{ .NRI.PluginPath }}"
+
+`
+
+const templateStringCrioNRIPluginConfigDir = `# NRI plugin configuration directory to use.
+{{ $.Comment }}nri_plugin_config_dir = "{{ .NRI.PluginConfigPath }}"
+
+`
+
+const templateStringCrioNRIDisableConnections = `# Disable connections from externally launched NRI plugins.
+{{ $.Comment }}nri_disable_connections = {{ .NRI.DisableConnections }}
+
+`
+
+const templateStringCrioNRIPluginRegistrationTimeout = `# Timeout for a plugin to register itself with NRI.
+{{ $.Comment }}nri_plugin_registration_timeout = "{{ .NRI.PluginRegistrationTimeout }}"
+
+`
+
+const templateStringCrioNRIPluginRequestTimeout = `# Timeout for a plugin to handle an NRI request.
+{{ $.Comment }}nri_plugin_request_timeout = "{{ .NRI.PluginRequestTimeout }}"
 
 `

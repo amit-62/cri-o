@@ -8,7 +8,8 @@ on:
       - release-*
   pull_request:
 env:
-  GO_VERSION: '1.19'
+  GO_VERSION: '1.20'
+  NIX_VERSION: '2.13.3'
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -125,7 +126,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: cachix/install-nix-action@v18
+      - uses: cachix/install-nix-action@v20
+        with:
+          install_url: https://releases.nixos.org/nix/nix-${{ env.NIX_VERSION }}/install
       - uses: cachix/cachix-action@v12
         with:
           name: cri-o-static
@@ -145,7 +148,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: cachix/install-nix-action@v18
+      - uses: cachix/install-nix-action@v20
+        with:
+          install_url: https://releases.nixos.org/nix/nix-${{ env.NIX_VERSION }}/install
       - uses: cachix/cachix-action@v12
         with:
           name: cri-o-static
@@ -251,7 +256,7 @@ jobs:
     needs: bundle-test
     steps:
       - uses: actions/checkout@v3
-      - uses: sigstore/cosign-installer@v2
+      - uses: sigstore/cosign-installer@v3
       - uses: actions/download-artifact@v3
         with:
           name: bundle

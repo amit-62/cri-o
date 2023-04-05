@@ -159,6 +159,9 @@ the container runtime configuration.
   Used to change irqbalance service config file which is used by CRI-O.
   For CentOS/SUSE, this file is located at /etc/sysconfig/irqbalance. For Ubuntu, this file is located at /etc/default/irqbalance.
 
+**irqbalance_config_restore_file**="/etc/sysconfig/orig_irq_banned_cpus"
+  Used to set the irqbalance banned cpu mask to restore at CRI-O startup. If set to 'disable', no restoration attempt will be done.
+
 **rdt_config_file**=""
   Path to the RDT configuration file for configuring the resctrl pseudo-filesystem.
 
@@ -292,6 +295,9 @@ the container runtime configuration.
 
 **enable_pod_events**=false
 Enable CRI-O to generate the container pod-level events in order to optimize the performance of the Pod Lifecycle Event Generator (PLEG) module in Kubelet.
+
+**hostnetwork_disable_selinux**=true
+ Determines whether SELinux should be disabled within a pod when it is running in the host network namespace.
 
 ### CRIO.RUNTIME.RUNTIMES TABLE
 The "crio.runtime.runtimes" table defines a list of OCI compatible runtimes.  The runtime to use is picked based on the runtime handler provided by the CRI.  If no runtime handler is provided, the runtime will be picked based on the level of trust of the workload. This option supports live configuration reload. This option supports live configuration reload.
@@ -473,14 +479,23 @@ The `crio.nri` table contains settings for controlling NRI (Node Resource Interf
 **enable_nri**=false
   Enable CRI-O NRI support.
 
-**nri_config_file**="/etc/nri/nri.conf"
-  NRI configuration file to use.
-
 **nri_plugin_dir**="/opt/nri/plugins"
   Directory to scan for pre-installed plugins to automatically start.
 
-**nri_listen**="/var/run/nri.sock"
+**nri_plugin_config_dir**="/etc/nri/conf.d"
+  Directory to scan for configuration of pre-installed plugins.
+
+**nri_listen**="/var/run/nri/nri.sock"
   Socket to listen on for externally started NRI plugins to connect to.
+
+**nri_disable_connections**=false
+  Disable connections from externally started NRI plugins.
+
+**nri_plugin_registration_timeout**="5s"
+  Timeout for a plugin to register itself with NRI.
+
+**nri_plugin_request_timeout**="2s"
+  Timeout for a plugin to handle an NRI request.
 
 # SEE ALSO
 crio.conf.d(5), containers-storage.conf(5), containers-policy.json(5), containers-registries.conf(5), crio(8)

@@ -1,6 +1,6 @@
 dependencies:
   - name: go
-    version: 1.19
+    version: 1.20
     refPaths:
     - path: .github/workflows/verify.yml
       match: GO_VERSION
@@ -14,7 +14,7 @@ dependencies:
       match: golang_version
 
   - name: golangci-lint
-    version: v1.50.1
+    version: v1.51.1
     refPaths:
     - path: .github/workflows/verify.yml
       match: version
@@ -28,15 +28,17 @@ dependencies:
       match: VERSION
 
   - name: cni-plugins
-    version: v1.1.1
+    version: v1.2.0
     refPaths:
     - path: scripts/versions
       match: cni-plugins
     - path: contrib/test/integration/build/plugins.yml
       match: version
+    - path: contrib/test/ci/build/plugins.yml
+      match: version
 
   - name: conmon
-    version: v2.1.2
+    version: v2.1.6
     refPaths:
     - path: scripts/versions
       match: conmon
@@ -52,13 +54,13 @@ dependencies:
       match: cri_tools_git_version
 
   - name: runc
-    version: v1.1.4
+    version: v1.1.5
     refPaths:
     - path: scripts/versions
       match: runc
 
   - name: crun
-    version: 1.5
+    version: 1.8.3
     refPaths:
     - path: scripts/versions
       match: crun
@@ -70,3 +72,21 @@ dependencies:
       match: bats
     - path: contrib/test/integration/build/bats.yml
       match: version
+
+  - name: zeitgeist
+    version: 0.4.1
+    refPaths:
+      - path: Makefile
+        match: ZEITGEIST_VERSION
+
+  - name: nix
+    version: 2.13.3
+    refPaths:
+      - path: .github/workflows/test.yml
+        match: NIX_VERSION
+
+  - name: bom
+    version: 0.5.1
+    refPaths:
+      - path: Makefile
+        match: BOM_VERSION

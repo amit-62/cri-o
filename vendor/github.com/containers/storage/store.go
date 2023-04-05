@@ -247,6 +247,8 @@ type Store interface {
 
 	// Unmount attempts to unmount an image, given an ID.
 	// Returns whether or not the layer is still mounted.
+	// WARNING: The return value may already be obsolete by the time it is available
+	// to the caller, so it can be used for heuristic sanity checks at best. It should almost always be ignored.
 	UnmountImage(id string, force bool) (bool, error)
 
 	// Mount attempts to mount a layer, image, or container for access, and
@@ -265,9 +267,15 @@ type Store interface {
 
 	// Unmount attempts to unmount a layer, image, or container, given an ID, a
 	// name, or a mount path. Returns whether or not the layer is still mounted.
+	// WARNING: The return value may already be obsolete by the time it is available
+	// to the caller, so it can be used for heuristic sanity checks at best. It should almost always be ignored.
 	Unmount(id string, force bool) (bool, error)
 
 	// Mounted returns number of times the layer has been mounted.
+	//
+	// WARNING: This value might already be obsolete by the time it is returned;
+	// In situations where concurrent mount/unmount attempts can happen, this field
+	// should not be used for any decisions, maybe apart from heuristic user warnings.
 	Mounted(id string) (int, error)
 
 	// Changes returns a summary of the changes which would need to be made
@@ -511,7 +519,7 @@ type Store interface {
 	GarbageCollect() error
 }
 
-// AdditionalLayer reprents a layer that is contained in the additional layer store
+// AdditionalLayer represents a layer that is contained in the additional layer store
 // This API is experimental and can be changed without bumping the major version number.
 type AdditionalLayer interface {
 	// PutAs creates layer based on this handler, using diff contents from the additional
@@ -591,8 +599,9 @@ type store struct {
 
 	// The following fields are only set when constructing store, and must never be modified afterwards.
 	// They are safe to access without any other locking.
-	runRoot         string
-	graphDriverName string // Initially set to the user-requested value, possibly ""; updated during store construction, and does not change afterwards.
+	runRoot             string
+	graphDriverName     string // Initially set to the user-requested value, possibly ""; updated during store construction, and does not change afterwards.
+	graphDriverPriority []string
 	// graphLock:
 	// - Ensures that we always reload graphDriver, and the primary layer store, after any process does store.Shutdown. This is necessary
 	//   because (??) the Shutdown may forcibly unmount and clean up, affecting graph driver state in a way only a graph driver
@@ -723,20 +732,21 @@ func GetStore(options types.StoreOptions) (Store, error) {
 		autoNsMaxSize = AutoUserNsMaxSize
 	}
 	s := &store{
-		runRoot:         options.RunRoot,
-		graphDriverName: options.GraphDriverName,
-		graphLock:       graphLock,
-		usernsLock:      usernsLock,
-		graphRoot:       options.GraphRoot,
-		graphOptions:    options.GraphDriverOptions,
-		pullOptions:     options.PullOptions,
-		uidMap:          copyIDMap(options.UIDMap),
-		gidMap:          copyIDMap(options.GIDMap),
-		autoUsernsUser:  options.RootAutoNsUser,
-		autoNsMinSize:   autoNsMinSize,
-		autoNsMaxSize:   autoNsMaxSize,
-		disableVolatile: options.DisableVolatile,
-		transientStore:  options.TransientStore,
+		runRoot:             options.RunRoot,
+		graphDriverName:     options.GraphDriverName,
+		graphDriverPriority: options.GraphDriverPriority,
+		graphLock:           graphLock,
+		usernsLock:          usernsLock,
+		graphRoot:           options.GraphRoot,
+		graphOptions:        options.GraphDriverOptions,
+		pullOptions:         options.PullOptions,
+		uidMap:              copyIDMap(options.UIDMap),
+		gidMap:              copyIDMap(options.GIDMap),
+		autoUsernsUser:      options.RootAutoNsUser,
+		autoNsMinSize:       autoNsMinSize,
+		autoNsMaxSize:       autoNsMaxSize,
+		disableVolatile:     options.DisableVolatile,
+		transientStore:      options.TransientStore,
 
 		additionalUIDs: nil,
 		additionalGIDs: nil,
@@ -810,7 +820,7 @@ func (s *store) GIDMap() []idtools.IDMap {
 	return copyIDMap(s.gidMap)
 }
 
-// This must only be called when constructing store; it writes to fields that are assumed to be constant after constrution.
+// This must only be called when constructing store; it writes to fields that are assumed to be constant after construction.
 func (s *store) load() error {
 	var driver drivers.Driver
 	if err := func() error { // A scope for defer
@@ -934,11 +944,12 @@ func (s *store) stopUsingGraphDriver() {
 // The caller must hold s.graphLock.
 func (s *store) createGraphDriverLocked() (drivers.Driver, error) {
 	config := drivers.Options{
-		Root:          s.graphRoot,
-		RunRoot:       s.runRoot,
-		DriverOptions: s.graphOptions,
-		UIDMaps:       s.uidMap,
-		GIDMaps:       s.gidMap,
+		Root:           s.graphRoot,
+		RunRoot:        s.runRoot,
+		DriverPriority: s.graphDriverPriority,
+		DriverOptions:  s.graphOptions,
+		UIDMaps:        s.uidMap,
+		GIDMaps:        s.gidMap,
 	}
 	return drivers.New(s.graphDriverName, config)
 }
@@ -2588,7 +2599,7 @@ func (s *store) Unmount(id string, force bool) (bool, error) {
 	err := s.writeToLayerStore(func(rlstore rwLayerStore) error {
 		if rlstore.Exists(id) {
 			var err error
-			res, err = rlstore.Unmount(id, force)
+			res, err = rlstore.unmount(id, force, false)
 			return err
 		}
 		return ErrLayerUnknown
@@ -3149,8 +3160,11 @@ func (s *store) Shutdown(force bool) ([]string, error) {
 		}
 		mounted = append(mounted, layer.ID)
 		if force {
-			for layer.MountCount > 0 {
-				_, err2 := rlstore.Unmount(layer.ID, force)
+			for {
+				_, err2 := rlstore.unmount(layer.ID, force, true)
+				if err2 == ErrLayerNotMounted {
+					break
+				}
 				if err2 != nil {
 					if err == nil {
 						err = err2
@@ -3327,7 +3341,14 @@ func (s *store) GarbageCollect() error {
 		return s.containerStore.GarbageCollect()
 	})
 
-	moreErr := s.writeToLayerStore(func(rlstore rwLayerStore) error {
+	moreErr := s.writeToImageStore(func() error {
+		return s.imageStore.GarbageCollect()
+	})
+	if firstErr == nil {
+		firstErr = moreErr
+	}
+
+	moreErr = s.writeToLayerStore(func(rlstore rwLayerStore) error {
 		return rlstore.GarbageCollect()
 	})
 	if firstErr == nil {

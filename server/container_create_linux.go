@@ -294,7 +294,7 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 		processLabel, mountLabel = "", ""
 	}
 
-	if hostNet {
+	if hostNet && s.config.RuntimeConfig.HostNetworkDisableSELinux {
 		processLabel = ""
 	}
 
@@ -722,6 +722,8 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 			Options:     append(m.Options, "bind"),
 			Destination: m.Destination,
 			Source:      m.Source,
+			UIDMappings: m.UIDMappings,
+			GIDMappings: m.GIDMappings,
 		}
 		ctr.SpecAddMount(rspecMount)
 	}
@@ -802,13 +804,17 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 	if containerIDMappings == nil {
 		rootPair = idtools.IDPair{UID: 0, GID: 0}
 	}
+
+	etc := filepath.Join(mountPoint, "/etc")
+	// create the `/etc` folder only when it doesn't exist
+	if _, err := os.Stat(etc); err != nil && os.IsNotExist(err) {
+		if err := idtools.MkdirAllAndChown(etc, 0o755, rootPair); err != nil {
+			return nil, fmt.Errorf("error creating mtab directory: %w", err)
+		}
+	}
 	// add symlink /etc/mtab to /proc/mounts allow looking for mountfiles there in the container
 	// compatible with Docker
-	mtab := filepath.Join(mountPoint, "/etc/mtab")
-	if err := idtools.MkdirAllAs(filepath.Dir(mtab), 0o755, rootPair.UID, rootPair.GID); err != nil {
-		return nil, fmt.Errorf("error creating mtab directory: %w", err)
-	}
-	if err := os.Symlink("/proc/mounts", mtab); err != nil && !os.IsExist(err) {
+	if err := os.Symlink("/proc/mounts", filepath.Join(etc, "mtab")); err != nil && !os.IsExist(err) {
 		return nil, err
 	}
 
@@ -1026,6 +1032,8 @@ func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel,
 			Source:      src,
 			Destination: dest,
 			Options:     options,
+			UIDMappings: getOCIMappings(m.UidMappings),
+			GIDMappings: getOCIMappings(m.GidMappings),
 		})
 	}
 
@@ -1046,6 +1054,21 @@ func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel,
 	}
 
 	return volumes, ociMounts, nil
+}
+
+func getOCIMappings(m []*types.IDMapping) []rspec.LinuxIDMapping {
+	if m == nil {
+		return nil
+	}
+	ids := make([]rspec.LinuxIDMapping, 0, len(m))
+	for i, m := range m {
+		ids[i] = rspec.LinuxIDMapping{
+			ContainerID: m.ContainerId,
+			HostID:      m.HostId,
+			Size:        m.Length,
+		}
+	}
+	return ids
 }
 
 // mountExists returns true if dest exists in the list of mounts

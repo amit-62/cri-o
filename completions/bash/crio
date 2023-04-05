@@ -56,11 +56,13 @@ h
 --grpc-max-recv-msg-size
 --grpc-max-send-msg-size
 --hooks-dir
+--hostnetwork-disable-selinux
 --image-volumes
 --infra-ctr-cpuset
 --insecure-registry
 --internal-wipe
 --irqbalance-config-file
+--irqbalance-config-restore-file
 --listen
 --log
 --log-dir
@@ -78,9 +80,12 @@ h
 --minimum-mappable-uid
 --namespaces-dir
 --no-pivot
---nri-config-file
+--nri-disable-connections
 --nri-listen
+--nri-plugin-config-dir
 --nri-plugin-dir
+--nri-plugin-registration-timeout
+--nri-plugin-request-timeout
 --pause-command
 --pause-image
 --pause-image-auth-file

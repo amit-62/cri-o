@@ -62,7 +62,9 @@ GOLANGCI_LINT := ${BUILD_BIN_PATH}/golangci-lint
 GO_MOD_OUTDATED := ${BUILD_BIN_PATH}/go-mod-outdated
 RELEASE_NOTES := ${BUILD_BIN_PATH}/release-notes
 ZEITGEIST := ${BUILD_BIN_PATH}/zeitgeist
+ZEITGEIST_VERSION := v0.4.1
 BOM := ${BUILD_BIN_PATH}/bom
+BOM_VERSION := v0.5.1
 SHFMT := ${BUILD_BIN_PATH}/shfmt
 SHELLCHECK := ${BUILD_BIN_PATH}/shellcheck
 BATS_FILES := $(wildcard test/*.bats)
@@ -193,7 +195,7 @@ test/checkcriu/checkcriu: $(GO_FILES) .gopathok
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/test/checkcriu
 
 test/nri/nri.test: $(wildcard test/nri/*.go) .gopathok
-	$(GO) test --tags "test $(BUILDTAGS)" -c $(PROJECT)/test/nri -o $@ 
+	$(GO) test --tags "test $(BUILDTAGS)" -c $(PROJECT)/test/nri -o $@
 
 bin/crio: $(GO_FILES) .gopathok
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/cmd/crio
@@ -284,15 +286,21 @@ ${GO_MOD_OUTDATED}:
 	$(call go-build,./vendor/github.com/psampaz/go-mod-outdated)
 
 ${ZEITGEIST}:
-	$(call go-build,./vendor/sigs.k8s.io/zeitgeist)
+	mkdir -p $(BUILD_BIN_PATH)
+	curl -sSfL -o $(BUILD_BIN_PATH)/zeitgeist \
+		https://github.com/kubernetes-sigs/zeitgeist/releases/download/$(ZEITGEIST_VERSION)/zeitgeist_$(ZEITGEIST_VERSION:v%=%)_linux_amd64
+	chmod +x $(BUILD_BIN_PATH)/zeitgeist
 
 ${BOM}:
-	$(call go-build, ./vendor/sigs.k8s.io/bom/cmd/bom)
+	mkdir -p $(BUILD_BIN_PATH)
+	curl -sSfL -o $(BUILD_BIN_PATH)/bom \
+		https://github.com/kubernetes-sigs/bom/releases/download/$(BOM_VERSION)/bom-amd64-linux
+	chmod +x $(BUILD_BIN_PATH)/bom
 
 bom: ${BOM}
 
 ${GOLANGCI_LINT}:
-	export VERSION=v1.50.1 \
+	export VERSION=v1.51.1 \
 		URL=https://raw.githubusercontent.com/golangci/golangci-lint \
 		BINDIR=${BUILD_BIN_PATH} && \
 	curl -sSfL $$URL/$$VERSION/install.sh | sh -s $$VERSION

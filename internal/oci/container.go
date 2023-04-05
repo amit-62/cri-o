@@ -114,6 +114,8 @@ type ContainerState struct {
 	// This is used to track whether the PID we have stored
 	// is the same as the corresponding PID on the host.
 	InitStartTime string `json:"initStartTime,omitempty"`
+	// Checkpoint/Restore related states
+	CheckpointedAt time.Time `json:"checkpointedTime,omitempty"`
 }
 
 // NewContainer creates a container object.
@@ -204,7 +206,10 @@ func (c *Container) SetSpec(s *specs.Spec) {
 
 // Spec returns a copy of the spec for the container
 func (c *Container) Spec() specs.Spec {
-	return *c.spec
+	if c.spec != nil {
+		return *c.spec
+	}
+	return specs.Spec{}
 }
 
 // ConmonCgroupfsPath returns the path to conmon's cgroup. This is only set when
@@ -291,6 +296,16 @@ func (c *Container) StatePath() string {
 // CreatedAt returns the container creation time
 func (c *Container) CreatedAt() time.Time {
 	return c.state.Created
+}
+
+// CheckpointedAt returns the container checkpoint time
+func (c *Container) CheckpointedAt() time.Time {
+	return c.state.CheckpointedAt
+}
+
+// SetCheckpointedAt sets the time of checkpointing
+func (c *Container) SetCheckpointedAt(checkpointedAt time.Time) {
+	c.state.CheckpointedAt = checkpointedAt
 }
 
 // Name returns the name of the container.
