@@ -3,6 +3,7 @@ set -euo pipefail
 
 ARCH_AMD64=amd64
 ARCH_ARM64=arm64
+ARCH_PPC64LE=ppc64le
 
 ARCH=${1:-$ARCH_AMD64}
 
@@ -36,6 +37,7 @@ FILES_ETC=(
     "$GIT_ROOT/contrib/bundle/10-crun.conf"
 )
 FILES_CONTRIB=(
+    "$GIT_ROOT/contrib/bundle/registries.conf"
     "$GIT_ROOT/contrib/cni/11-crio-ipv4-bridge.conflist"
     "$GIT_ROOT/contrib/policy.json"
     "$GIT_ROOT/contrib/systemd/crio.service"
@@ -55,7 +57,7 @@ for FILE in "${FILES_BIN[@]}"; do
         echo "File '$FILE' does not exist"
         ERRORED=1
     elif [[ ! -x "$FILE" ]]; then
-        echo "File '$FILE' is not exectuable"
+        echo "File '$FILE' is not executable"
         ERRORED=1
     elif ! file "$FILE" | grep "statically linked" | grep -q stripped; then
         echo "Binary '$FILE' is not statically linked and stripped"
@@ -138,9 +140,12 @@ curl_to - \
     tar xfz - -C "$TMP_BIN"
 
 # Check the architectures of the binaries
-ELF_ARCH=x86-64
 if [[ $ARCH == "$ARCH_ARM64" ]]; then
     ELF_ARCH=aarch64
+elif [[ $ARCH == "$ARCH_PPC64LE" ]]; then
+    ELF_ARCH=PowerPC
+else
+    ELF_ARCH=x86-64
 fi
 for FILE in "$TMP_BIN"/*; do
     if ! file "$FILE" | grep -q "$ELF_ARCH"; then
@@ -178,10 +183,11 @@ $BOM validate -e "$SPDX_PATH" -d "$CRIODIR"
 pushd "$TMPDIR"
 export DESTDIR=test/
 ./install
-EXP_CNT=65
+EXP_CNT=67
 if ! command -v runc; then
     EXP_CNT=$((EXP_CNT + 1))
 fi
+
 ACT_CNT=$(find test | wc -l)
 if [[ "$EXP_CNT" != "$ACT_CNT" ]]; then
     echo "install file count does not match, expected: $EXP_CNT, actual: $ACT_CNT"

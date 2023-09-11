@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 
@@ -17,13 +18,14 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+	kubetypes "k8s.io/kubelet/pkg/types"
 )
 
 var _ = t.Describe("ContainerRestore", func() {
 	// Prepare the sut
 	BeforeEach(func() {
-		if !criu.CheckForCriu(criu.PodCriuVersion) {
-			Skip("CRIU is missing or too old.")
+		if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+			Skip("Check CRIU: " + err.Error())
 		}
 		beforeEach()
 		createDummyConfig()
@@ -94,7 +96,7 @@ var _ = t.Describe("ContainerRestore", func() {
 				"",
 			)
 			// Then
-			Expect(err.Error()).To(ContainSubstring(`failed to read "spec.dump": failed to read`))
+			Expect(err.Error()).To(ContainSubstring(`failed to read "spec.dump": open `))
 		})
 	})
 	t.Describe("ContainerRestore from archive into new pod", func() {
@@ -427,98 +429,118 @@ var _ = t.Describe("ContainerRestore", func() {
 		})
 	})
 	t.Describe("ContainerRestore from archive into new pod", func() {
-		It("should succeed", func() {
-			// Given
-			addContainerAndSandbox()
-			testContainer.SetStateAndSpoofPid(&oci.ContainerState{
-				State: specs.State{Status: oci.ContainerStateRunning},
-			})
+		images := []string{
+			`{"rootfsImageName": "image"}`,
+			`{"rootfsImageRef": "image"}`,
+		}
+		for _, image := range images {
+			loopImage := image
+			It(fmt.Sprintf("should succeed (%s)", image), func() {
+				// Given
+				addContainerAndSandbox()
+				testContainer.SetStateAndSpoofPid(&oci.ContainerState{
+					State: specs.State{Status: oci.ContainerStateRunning},
+				})
 
-			err := os.WriteFile(
-				"spec.dump",
-				[]byte(`{"annotations":{"io.kubernetes.cri-o.Metadata"`+
-					`:"{\"name\":\"container-to-restore\"}",`+
-					`"io.kubernetes.cri-o.Annotations": "{\"name\":\"NAME\"}",`+
-					`"io.kubernetes.cri-o.Labels": "{\"io.kubernetes.container.name\":\"counter\"}",`+
-					`"io.kubernetes.cri-o.SandboxID": "sandboxID"},`+
-					`"mounts": [{"destination": "/proc"},`+
-					`{"destination":"/data","source":"/data","options":`+
-					`["rw","ro","rbind","rprivate","rshared","rslaved"]}],`+
-					`"linux": {"maskedPaths": ["/proc/acpi"], "readonlyPaths": ["/proc/asound"]}}`),
-				0o644,
-			)
-			Expect(err).To(BeNil())
-			defer os.RemoveAll("spec.dump")
-			err = os.WriteFile("config.dump", []byte(`{"rootfsImageName": "image"}`), 0o644)
-			Expect(err).To(BeNil())
-			defer os.RemoveAll("config.dump")
-			outFile, err := os.Create("archive.tar")
-			Expect(err).To(BeNil())
-			defer outFile.Close()
-			input, err := archive.TarWithOptions(".", &archive.TarOptions{
-				Compression:      archive.Uncompressed,
-				IncludeSourceDir: true,
-				IncludeFiles:     []string{"spec.dump", "config.dump"},
-			})
-			Expect(err).To(BeNil())
-			defer os.RemoveAll("archive.tar")
-			_, err = io.Copy(outFile, input)
-			Expect(err).To(BeNil())
-			containerConfig := &types.ContainerConfig{
-				Image: &types.ImageSpec{
-					Image: "archive.tar",
-				},
-				Linux: &types.LinuxContainerConfig{
-					Resources:       &types.LinuxContainerResources{},
-					SecurityContext: &types.LinuxContainerSecurityContext{},
-				},
-			}
+				err := os.WriteFile(
+					"spec.dump",
+					[]byte(`{"annotations":{"io.kubernetes.cri-o.Metadata"`+
+						`:"{\"name\":\"container-to-restore\"}",`+
+						`"io.kubernetes.cri-o.Annotations": "{\"name\":\"NAME\",`+
+						`\"io.kubernetes.container.hash\":\"b4eeb97f\",`+
+						`\"io.kubernetes.pod.uid\":\"old-sandbox-uid\"}",`+
+						`"io.kubernetes.cri-o.Labels": "{\"io.kubernetes.container.name\":\"counter\",`+
+						`\"io.kubernetes.pod.uid\":\"old-sandbox-uid\"}",`+
+						`"io.kubernetes.cri-o.SandboxID": "sandboxID"},`+
+						`"mounts": [{"destination": "/proc"},`+
+						`{"destination":"/data","source":"/data","options":`+
+						`["rw","ro","rbind","rprivate","rshared","rslaved"]}],`+
+						`"linux": {"maskedPaths": ["/proc/acpi"], "readonlyPaths": ["/proc/asound"]}}`),
+					0o644,
+				)
+				Expect(err).To(BeNil())
+				defer os.RemoveAll("spec.dump")
+				err = os.WriteFile("config.dump", []byte(loopImage), 0o644)
+				Expect(err).To(BeNil())
+				defer os.RemoveAll("config.dump")
+				outFile, err := os.Create("archive.tar")
+				Expect(err).To(BeNil())
+				defer outFile.Close()
+				input, err := archive.TarWithOptions(".", &archive.TarOptions{
+					Compression:      archive.Uncompressed,
+					IncludeSourceDir: true,
+					IncludeFiles:     []string{"spec.dump", "config.dump"},
+				})
+				Expect(err).To(BeNil())
+				defer os.RemoveAll("archive.tar")
+				_, err = io.Copy(outFile, input)
+				Expect(err).To(BeNil())
+				containerConfig := &types.ContainerConfig{
+					Image: &types.ImageSpec{
+						Image: "archive.tar",
+					},
+					Linux: &types.LinuxContainerConfig{
+						Resources:       &types.LinuxContainerResources{},
+						SecurityContext: &types.LinuxContainerSecurityContext{},
+					},
+					Labels: map[string]string{
+						kubetypes.KubernetesContainerNameLabel: "NEW-NAME",
+					},
+					Annotations: map[string]string{
+						kubetypes.KubernetesPodUIDLabel: "new-sandbox-uid",
+						"io.kubernetes.container.hash":  "new-hash",
+					},
+					Metadata: &types.ContainerMetadata{
+						Name: "new-container-name",
+					},
+				}
 
-			size := uint64(100)
-			gomock.InOrder(
-				imageServerMock.EXPECT().ResolveNames(
-					gomock.Any(), gomock.Any()).
-					Return([]string{"image"}, nil),
+				size := uint64(100)
+				gomock.InOrder(
+					imageServerMock.EXPECT().ResolveNames(
+						gomock.Any(), gomock.Any()).
+						Return([]string{"image"}, nil),
 
-				imageServerMock.EXPECT().ImageStatus(
-					gomock.Any(), gomock.Any()).
-					Return(&storage.ImageResult{
-						ID:   "image",
-						User: "10", Size: &size,
-						Annotations: map[string]string{
-							crioann.CheckpointAnnotationName: "foo",
-						},
-					}, nil),
+					imageServerMock.EXPECT().ImageStatus(
+						gomock.Any(), gomock.Any()).
+						Return(&storage.ImageResult{
+							ID:   "image",
+							User: "10", Size: &size,
+							Annotations: map[string]string{
+								crioann.CheckpointAnnotationName: "foo",
+							},
+						}, nil),
 
-				runtimeServerMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
-					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
-					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
-					gomock.Any(), gomock.Any()).
-					Return(storage.ContainerInfo{
-						Config: &v1.Image{
-							Config: v1.ImageConfig{
-								Entrypoint: []string{"sh"},
+					runtimeServerMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
+						gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+						gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+						gomock.Any(), gomock.Any()).
+						Return(storage.ContainerInfo{
+							Config: &v1.Image{
+								Config: v1.ImageConfig{
+									Entrypoint: []string{"sh"},
+								},
 							},
 						},
-					},
-						nil,
-					),
-				runtimeServerMock.EXPECT().StartContainer(gomock.Any()).
-					Return(emptyDir, nil),
-			)
+							nil,
+						),
+					runtimeServerMock.EXPECT().StartContainer(gomock.Any()).
+						Return(emptyDir, nil),
+				)
 
-			// When
+				// When
 
-			_, err = sut.CRImportCheckpoint(
-				context.Background(),
-				containerConfig,
-				"",
-				"",
-			)
+				_, err = sut.CRImportCheckpoint(
+					context.Background(),
+					containerConfig,
+					"",
+					"new-sandbox-id",
+				)
 
-			// Then
-			Expect(err).To(BeNil())
-		})
+				// Then
+				Expect(err).To(BeNil())
+			})
+		}
 	})
 	t.Describe("ContainerRestore from OCI archive", func() {
 		It("should fail because archive does not exist", func() {
@@ -571,7 +593,7 @@ var _ = t.Describe("ContainerRestore", func() {
 			)
 
 			// Then
-			Expect(err.Error()).To(ContainSubstring(`failed to read spec.dump: open spec.dump: no such file or directory`))
+			Expect(err.Error()).To(ContainSubstring(`failed to read "spec.dump": open spec.dump: no such file or directory`))
 		})
 	})
 })

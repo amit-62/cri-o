@@ -6,12 +6,14 @@ import (
 
 	"github.com/containers/storage"
 	"github.com/cri-o/cri-o/internal/lib/sandbox"
+	"github.com/cri-o/cri-o/internal/linklogs"
 	"github.com/cri-o/cri-o/internal/log"
 	oci "github.com/cri-o/cri-o/internal/oci"
-	"github.com/cri-o/cri-o/internal/runtimehandlerhooks"
+	ann "github.com/cri-o/cri-o/pkg/annotations"
 	"golang.org/x/net/context"
 	"golang.org/x/sync/errgroup"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+	kubeletTypes "k8s.io/kubelet/pkg/types"
 )
 
 func (s *Server) stopPodSandbox(ctx context.Context, sb *sandbox.Sandbox) error {
@@ -21,6 +23,14 @@ func (s *Server) stopPodSandbox(ctx context.Context, sb *sandbox.Sandbox) error 
 	stopMutex.Lock()
 	defer stopMutex.Unlock()
 
+	// Unlink logs if they were linked
+	sbAnnotations := sb.Annotations()
+	if emptyDirVolName, ok := sbAnnotations[ann.LinkLogsAnnotation]; ok {
+		if err := linklogs.UnmountPodLogs(ctx, sb.Labels()[kubeletTypes.KubernetesPodUIDLabel], emptyDirVolName); err != nil {
+			log.Warnf(ctx, "Failed to unlink logs: %v", err)
+		}
+	}
+
 	// Clean up sandbox networking and close its network namespace.
 	if err := s.networkStop(ctx, sb); err != nil {
 		return err
@@ -29,12 +39,6 @@ func (s *Server) stopPodSandbox(ctx context.Context, sb *sandbox.Sandbox) error 
 	if sb.Stopped() {
 		log.Infof(ctx, "Stopped pod sandbox (already stopped): %s", sb.ID())
 		return nil
-	}
-
-	// Get high-performance runtime hook to trigger preStop step for each container
-	hooks, err := runtimehandlerhooks.GetRuntimeHandlerHooks(ctx, &s.config, sb.RuntimeHandler(), sb.Annotations())
-	if err != nil {
-		return fmt.Errorf("failed to get runtime handler %q hooks", sb.RuntimeHandler())
 	}
 
 	podInfraContainer := sb.InfraContainer()
@@ -59,16 +63,8 @@ func (s *Server) stopPodSandbox(ctx context.Context, sb *sandbox.Sandbox) error 
 					if err := s.stopContainer(ctx, c, int64(10)); err != nil {
 						return fmt.Errorf("failed to stop container for pod sandbox %s: %v", sb.ID(), err)
 					}
-					if err := s.nri.stopContainer(ctx, sb, c); err != nil {
-						return err
-					}
 					return nil
 				})
-			}
-			if hooks != nil {
-				if err := hooks.PreStop(ctx, ctr, sb); err != nil {
-					log.Warnf(ctx, "Failed to run PreStop hook for container %s in pod sandbox %s: %v", ctr.Name(), sb.ID(), err)
-				}
 			}
 		}
 		if err := waitGroup.Wait(); err != nil {
@@ -76,7 +72,7 @@ func (s *Server) stopPodSandbox(ctx context.Context, sb *sandbox.Sandbox) error 
 		}
 	}
 
-	if err := s.stopContainer(ctx, podInfraContainer, int64(10)); err != nil && !errors.Is(err, storage.ErrContainerUnknown) && !errors.Is(err, oci.ErrContainerStopped) {
+	if err := s.stopContainer(ctx, podInfraContainer, int64(10)); err != nil && !errors.Is(err, storage.ErrContainerUnknown) {
 		return fmt.Errorf("failed to stop infra container for pod sandbox %s: %v", sb.ID(), err)
 	}
 
@@ -94,7 +90,12 @@ func (s *Server) stopPodSandbox(ctx context.Context, sb *sandbox.Sandbox) error 
 
 	log.Infof(ctx, "Stopped pod sandbox: %s", sb.ID())
 	sb.SetStopped(ctx, true)
-	s.generateCRIEvent(ctx, sb.InfraContainer(), types.ContainerEventType_CONTAINER_STOPPED_EVENT)
+
+	if podInfraContainer.Spoofed() {
+		// event generation would be needed in case of a spoofed infra container where there is no
+		// exit process that hits the handleExit() code.
+		s.generateCRIEvent(ctx, sb.InfraContainer(), types.ContainerEventType_CONTAINER_STOPPED_EVENT)
+	}
 
 	return nil
 }

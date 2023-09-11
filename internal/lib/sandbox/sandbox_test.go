@@ -44,7 +44,7 @@ var _ = t.Describe("Sandbox", func() {
 			sandbox, err := sandbox.New(id, namespace, name, kubeName, logDir,
 				labels, annotations, processLabel, mountLabel, &metadata,
 				shmPath, cgroupParent, privileged, runtimeHandler,
-				resolvPath, hostname, portMappings, hostNetwork, createdAt, "")
+				resolvPath, hostname, portMappings, hostNetwork, createdAt, "", nil, nil)
 
 			// Then
 			Expect(err).To(BeNil())
@@ -135,7 +135,7 @@ var _ = t.Describe("Sandbox", func() {
 			Expect(testSandbox.DNSConfig()).To(BeNil())
 			dnsConfig := types.DNSConfig{
 				Servers:  []string{"server1", "server2"},
-				Searches: []string{"searche1", "searches"},
+				Searches: []string{"search1", "searches"},
 				Options:  []string{"option1", "option2"},
 			}
 

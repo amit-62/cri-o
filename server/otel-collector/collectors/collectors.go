@@ -59,6 +59,9 @@ const (
 	// Deprecated: in favour of ImageLayerReuseTotal
 	ImageLayerReuse Collector = crioPrefix + "image_layer_reuse"
 
+	// ContainersEventsDropped is the key for the total number of container events dropped counter.
+	ContainersEventsDropped Collector = crioPrefix + "containers_events_dropped_total"
+
 	// ContainersOOMTotal is the key for the total CRI-O container out of memory metrics.
 	ContainersOOMTotal Collector = crioPrefix + "containers_oom_total"
 
@@ -101,6 +104,9 @@ const (
 
 	// ContainersSeccompNotifierCountTotal is the key for the CRI-O container seccomp notifier metrics per container name and syscalls.
 	ContainersSeccompNotifierCountTotal Collector = crioPrefix + "containers_seccomp_notifier_count_total"
+
+	// ResourcesStalledAtStage is the key for the resources stalled at different stages in container and pod creation.
+	ResourcesStalledAtStage Collector = crioPrefix + "resources_stalled_at_stage"
 )
 
 // FromSlice converts a string slice to a Collectors type.
@@ -134,6 +140,7 @@ func All() Collectors {
 		ImagePullsSuccesses.Stripped(),     // Deprecated: in favour of ImagePullsSuccessTotal
 		ImagePullsLayerSize.Stripped(),
 		ImageLayerReuse.Stripped(), // Deprecated: in favour of ImageLayerReuseTotal
+		ContainersEventsDropped.Stripped(),
 		ContainersOOMTotal.Stripped(),
 		ContainersOOM.Stripped(), // Deprecated: in favour of ContainersOOMCountTotal
 		ProcessesDefunct.Stripped(),
@@ -148,6 +155,7 @@ func All() Collectors {
 		ImageLayerReuseTotal.Stripped(),
 		ContainersOOMCountTotal.Stripped(),
 		ContainersSeccompNotifierCountTotal.Stripped(),
+		ResourcesStalledAtStage.Stripped(),
 	}
 }
 

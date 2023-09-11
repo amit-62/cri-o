@@ -22,9 +22,11 @@ import (
 	sboxfactory "github.com/cri-o/cri-o/internal/factory/sandbox"
 	"github.com/cri-o/cri-o/internal/lib"
 	libsandbox "github.com/cri-o/cri-o/internal/lib/sandbox"
+	"github.com/cri-o/cri-o/internal/linklogs"
 	"github.com/cri-o/cri-o/internal/log"
 	oci "github.com/cri-o/cri-o/internal/oci"
 	"github.com/cri-o/cri-o/internal/resourcestore"
+	"github.com/cri-o/cri-o/internal/runtimehandlerhooks"
 	ann "github.com/cri-o/cri-o/pkg/annotations"
 	libconfig "github.com/cri-o/cri-o/pkg/config"
 	"github.com/cri-o/cri-o/utils"
@@ -36,7 +38,7 @@ import (
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/api/resource"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
-	kubeletTypes "k8s.io/kubernetes/pkg/kubelet/types"
+	kubeletTypes "k8s.io/kubelet/pkg/types"
 )
 
 // DefaultUserNSSize is the default size for the user namespace created
@@ -345,12 +347,15 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 
 	pathsToChown := []string{}
 
-	// we need to fill in the container name, as it is not present in the request. Luckily, it is a constant.
-	log.Infof(ctx, "Running pod sandbox: %s%s", translateLabelsToDescription(sbox.Config().Labels), oci.InfraContainerName)
-
 	kubeName := sbox.Config().Metadata.Name
+	kubePodUID := sbox.Config().Metadata.Uid
 	namespace := sbox.Config().Metadata.Namespace
 	attempt := sbox.Config().Metadata.Attempt
+
+	// These fields are populated by the Kubelet, but not crictl. Populate if needed.
+	sbox.Config().Labels = populateSandboxLabels(sbox.Config().Labels, kubeName, kubePodUID, namespace)
+	// we need to fill in the container name, as it is not present in the request. Luckily, it is a constant.
+	log.Infof(ctx, "Running pod sandbox: %s%s", translateLabelsToDescription(sbox.Config().Labels), oci.InfraContainerName)
 
 	if err := sbox.SetNameAndID(); err != nil {
 		return nil, fmt.Errorf("setting pod sandbox name and id: %w", err)
@@ -559,7 +564,7 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 			}
 			shmSize = quantity.Value()
 		}
-		shmPath, err = setupShm(ctx, podContainer.RunDir, mountLabel, shmSize)
+		shmPath, err = sboxfactory.SetupShm(podContainer.RunDir, mountLabel, shmSize)
 		if err != nil {
 			return nil, err
 		}
@@ -570,6 +575,13 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 			}
 			return nil
 		})
+	}
+
+	// Link logs if requested
+	if emptyDirVolName, ok := kubeAnnotations[ann.LinkLogsAnnotation]; ok {
+		if err = linklogs.MountPodLogs(ctx, kubePodUID, emptyDirVolName, namespace, kubeName, mountLabel); err != nil {
+			log.Warnf(ctx, "Failed to link logs: %v", err)
+		}
 	}
 
 	s.resourceStore.SetStageForResource(ctx, sbox.Name(), "sandbox spec configuration")
@@ -674,7 +686,21 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 		}
 	}
 
-	sb, err := libsandbox.New(sbox.ID(), namespace, sbox.Name(), kubeName, logDir, labels, kubeAnnotations, processLabel, mountLabel, metadata, shmPath, cgroupParent, privileged, runtimeHandler, sbox.ResolvPath(), hostname, portMappings, hostNetwork, created, usernsMode)
+	overhead := sbox.Config().GetLinux().GetOverhead()
+	overheadJSON, err := json.Marshal(overhead)
+	if err != nil {
+		return nil, err
+	}
+	g.AddAnnotation(ann.PodLinuxOverhead, string(overheadJSON))
+
+	resources := sbox.Config().GetLinux().GetResources()
+	resourcesJSON, err := json.Marshal(resources)
+	if err != nil {
+		return nil, err
+	}
+	g.AddAnnotation(ann.PodLinuxResources, string(resourcesJSON))
+
+	sb, err := libsandbox.New(sbox.ID(), namespace, sbox.Name(), kubeName, logDir, labels, kubeAnnotations, processLabel, mountLabel, metadata, shmPath, cgroupParent, privileged, runtimeHandler, sbox.ResolvPath(), hostname, portMappings, hostNetwork, created, usernsMode, overhead, resources)
 	if err != nil {
 		return nil, err
 	}
@@ -856,22 +882,23 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 
 	sb.SetNamespaceOptions(securityContext.NamespaceOptions)
 
-	seccompProfilePath := securityContext.SeccompProfilePath
-	g.AddAnnotation(annotations.SeccompProfilePath, seccompProfilePath)
-	sb.SetSeccompProfilePath(seccompProfilePath)
+	seccompRef := types.SecurityProfile_Unconfined.String()
 	if !privileged {
-		if _, err := s.config.Seccomp().Setup(
+		_, ref, err := s.config.Seccomp().Setup(
 			ctx,
 			nil,
 			"",
 			nil,
 			g,
 			securityContext.Seccomp,
-			seccompProfilePath,
-		); err != nil {
+		)
+		if err != nil {
 			return nil, fmt.Errorf("setup seccomp: %w", err)
 		}
+		seccompRef = ref
 	}
+	sb.SetSeccompProfilePath(seccompRef)
+	g.AddAnnotation(annotations.SeccompProfilePath, seccompRef)
 
 	runtimeType, err := s.Runtime().RuntimeType(runtimeHandler)
 	if err != nil {
@@ -952,12 +979,21 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 		return nil, err
 	}
 
+	hooks, err := runtimehandlerhooks.GetRuntimeHandlerHooks(ctx, &s.config, sb.RuntimeHandler(), sb.Annotations())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get runtime handler %q hooks", sb.RuntimeHandler())
+	}
+	if hooks != nil {
+		if err := hooks.PreStart(ctx, container, sb); err != nil {
+			return nil, fmt.Errorf("failed to run pre-stop hook for container %q: %w", sb.ID(), err)
+		}
+	}
 	s.generateCRIEvent(ctx, sb.InfraContainer(), types.ContainerEventType_CONTAINER_CREATED_EVENT)
 	if err := s.Runtime().StartContainer(ctx, container); err != nil {
 		return nil, err
 	}
 	resourceCleaner.Add(ctx, "runSandbox: stopping container "+container.ID(), func() error {
-		// Clean-up steps from RemovePodSanbox
+		// Clean-up steps from RemovePodSandbox
 		if err := s.stopContainer(ctx, container, int64(10)); err != nil {
 			return fmt.Errorf("failed to stop container for removal")
 		}
@@ -1005,23 +1041,23 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 	return resp, nil
 }
 
-func setupShm(ctx context.Context, podSandboxRunDir, mountLabel string, shmSize int64) (shmPath string, _ error) {
-	_, span := log.StartSpan(ctx)
-	defer span.End()
-	if shmSize <= 0 {
-		return "", fmt.Errorf("shm size %d must be greater than 0", shmSize)
+// populateSandboxLabels adds some fields that Kubelet specifies by default, but other clients (crictl) does not.
+// While CRI-O typically only cares about the kubelet, the cost here is low. Adding this code prevents issues
+// with the LogLink feature, as the unmounting relies on the existence of the UID in the sandbox labels.
+func populateSandboxLabels(labels map[string]string, kubeName, kubePodUID, namespace string) map[string]string {
+	if labels == nil {
+		labels = make(map[string]string)
 	}
-
-	shmPath = filepath.Join(podSandboxRunDir, "shm")
-	if err := os.Mkdir(shmPath, 0o700); err != nil {
-		return "", err
+	if _, ok := labels[kubeletTypes.KubernetesPodNameLabel]; !ok {
+		labels[kubeletTypes.KubernetesPodNameLabel] = kubeName
 	}
-	shmOptions := "mode=1777,size=" + strconv.FormatInt(shmSize, 10)
-	if err := unix.Mount("shm", shmPath, "tmpfs", unix.MS_NOEXEC|unix.MS_NOSUID|unix.MS_NODEV,
-		label.FormatMountLabel(shmOptions, mountLabel)); err != nil {
-		return "", fmt.Errorf("failed to mount shm tmpfs for pod: %w", err)
+	if _, ok := labels[kubeletTypes.KubernetesPodNamespaceLabel]; !ok {
+		labels[kubeletTypes.KubernetesPodNamespaceLabel] = namespace
 	}
-	return shmPath, nil
+	if _, ok := labels[kubeletTypes.KubernetesPodUIDLabel]; !ok {
+		labels[kubeletTypes.KubernetesPodUIDLabel] = kubePodUID
+	}
+	return labels
 }
 
 func (s *Server) configureGeneratorForSysctls(ctx context.Context, g *generate.Generator, hostNetwork, hostIPC bool, sysctls map[string]string) map[string]string {

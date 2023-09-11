@@ -87,17 +87,13 @@
       runtime_root = "/run/crun"
   when: "use_conmonrs | default(False) | bool"
 
-- name: use kata
+- name: use evented-pleg
   copy:
-    dest: /etc/crio/crio.conf.d/50-kata.conf
+    dest: /etc/crio/crio.conf.d/99-evented-pleg.conf
     content: |
       [crio.runtime]
-      default_runtime = "kata"
-      [crio.runtime.runtimes.kata]
-      runtime_path = "/usr/bin/containerd-shim-kata-v2"
-      runtime_type = "vm"
-      runtime_root = "/run/vc"
-  when: "build_kata | default(False) | bool"
+      enable_pod_events = true
+  when: "evented_pleg_fg | default(False) | bool"
 
 - name: install configs
   copy:
@@ -111,3 +107,5 @@
       dest: /etc/cni/net.d/99-loopback.conflist
     - src: test/redhat_sigstore.yaml
       dest: /etc/containers/registries.d/registry.access.redhat.com.yaml
+    - src: test/default.yaml
+      dest: /etc/containers/registries.d/default.yaml

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -9,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blang/semver"
 	"github.com/cri-o/cri-o/internal/version"
+	"github.com/google/go-github/v50/github"
 	"github.com/sirupsen/logrus"
 	"sigs.k8s.io/release-sdk/git"
 	"sigs.k8s.io/release-utils/command"
@@ -55,10 +58,14 @@ func run() error {
 	}
 
 	// Get latest release version
-	startTag := util.AddTagPrefix(decVersion(version.Version))
+	releaseVersion, err := getLatestReleaseVersion(token)
+	if err != nil {
+		return fmt.Errorf("error while listing the github tags: %w", err)
+	}
+	startTag := util.AddTagPrefix(decVersion(releaseVersion))
 	logrus.Infof("Using start tag %s", startTag)
 
-	endTag := util.AddTagPrefix(version.Version)
+	endTag := util.AddTagPrefix(releaseVersion)
 	logrus.Infof("Using end tag %s", endTag)
 
 	// Generate the notes
@@ -105,7 +112,7 @@ func run() error {
 		logrus.Infof("Not using git tag because `git describe` failed: %v", err)
 	}
 
-	if _, err := templateFile.WriteString(fmt.Sprintf(`# CRI-O %s
+	if _, err := fmt.Fprintf(templateFile, `# CRI-O %s
 
 The release notes have been generated for the commit range
 [%s...%s](https://github.com/cri-o/cri-o/compare/%s...%s) on %s.
@@ -128,14 +135,23 @@ Download one of our static release bundles via our Google Cloud Bucket:
   - [cri-o.arm64.%s.tar.gz.spdx](https://storage.googleapis.com/cri-o/artifacts/cri-o.arm64.%s.tar.gz.spdx)
   - [cri-o.arm64.%s.tar.gz.spdx.sig](https://storage.googleapis.com/cri-o/artifacts/cri-o.arm64.%s.tar.gz.spdx.sig)
   - [cri-o.arm64.%s.tar.gz.spdx.cert](https://storage.googleapis.com/cri-o/artifacts/cri-o.arm64.%s.tar.gz.spdx.cert)
+- [cri-o.ppc64le.%s.tar.gz](https://storage.googleapis.com/cri-o/artifacts/cri-o.ppc64le.%s.tar.gz)
+  - [cri-o.ppc64le.%s.tar.gz.sha256sum](https://storage.googleapis.com/cri-o/artifacts/cri-o.ppc64le.%s.tar.gz.sha256sum)
+  - [cri-o.ppc64le.%s.tar.gz.sig](https://storage.googleapis.com/cri-o/artifacts/cri-o.ppc64le.%s.tar.gz.sig)
+  - [cri-o.ppc64le.%s.tar.gz.cert](https://storage.googleapis.com/cri-o/artifacts/cri-o.ppc64le.%s.tar.gz.cert)
+  - [cri-o.ppc64le.%s.tar.gz.spdx](https://storage.googleapis.com/cri-o/artifacts/cri-o.ppc64le.%s.tar.gz.spdx)
+  - [cri-o.ppc64le.%s.tar.gz.spdx.sig](https://storage.googleapis.com/cri-o/artifacts/cri-o.ppc64le.%s.tar.gz.spdx.sig)
+  - [cri-o.ppc64le.%s.tar.gz.spdx.cert](https://storage.googleapis.com/cri-o/artifacts/cri-o.ppc64le.%s.tar.gz.spdx.cert)
 
 To verify the artifact signatures via [cosign](https://github.com/sigstore/cosign), run:
 
 `+"```"+`console
 > export COSIGN_EXPERIMENTAL=1
 > cosign verify-blob cri-o.amd64.%s.tar.gz \
-    --certificate-identity-regexp '.*' \
-    --certificate-oidc-issuer-regexp '.*' \
+    --certificate-identity https://github.com/cri-o/cri-o/.github/workflows/test.yml@refs/tags/%s \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-github-workflow-repository cri-o/cri-o \
+    --certificate-github-workflow-ref refs/tags/%s \
     --signature cri-o.amd64.%s.tar.gz.sig \
     --certificate cri-o.amd64.%s.tar.gz.cert
 `+"```"+`
@@ -181,10 +197,18 @@ To verify the bill of materials (SBOM) in [SPDX](https://spdx.org) format using 
 		bundleVersion, bundleVersion,
 		bundleVersion, bundleVersion,
 		bundleVersion, bundleVersion,
+		bundleVersion, bundleVersion,
+		bundleVersion, bundleVersion,
+		bundleVersion, bundleVersion,
+		bundleVersion, bundleVersion,
+		bundleVersion, bundleVersion,
+		bundleVersion, bundleVersion,
+		bundleVersion, bundleVersion,
+		bundleVersion, bundleVersion,
 		bundleVersion, bundleVersion, bundleVersion,
 		bundleVersion, bundleVersion,
 		startTag,
-	)); err != nil {
+	); err != nil {
 		return fmt.Errorf("writing tmplate to file: %w", err)
 	}
 
@@ -337,4 +361,32 @@ func decVersion(tag string) string {
 	}
 
 	return sv.String()
+}
+
+// getLatestReleaseVersion fetches the latest github release
+// version from cri-o.
+func getLatestReleaseVersion(token string) (string, error) {
+	ctx := context.Background()
+	client := github.NewTokenClient(ctx, token)
+	tags, _, err := client.Repositories.ListTags(ctx, "cri-o", "cri-o", nil)
+	if err != nil {
+		return "", err
+	}
+	// To determine the latest release of cri-o, the code iterates over
+	// tags that are equal to or greater than the version.Version value,
+	// adds them to a list, sorts the list, and then returns the last
+	// element of the list.
+	rng, err := semver.ParseRange(fmt.Sprintf(">= %s", version.Version))
+	if err != nil {
+		return "", err
+	}
+	svers := []semver.Version{}
+	for _, tag := range tags {
+		v := semver.MustParse(strings.SplitAfter(tag.GetName(), "v")[1])
+		if rng(v) {
+			svers = append(svers, v)
+		}
+	}
+	semver.Sort(svers)
+	return svers[len(svers)-1].String(), nil
 }

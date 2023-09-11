@@ -140,7 +140,7 @@ func main() {
 	}
 
 	sort.Sort(cli.FlagsByName(app.Flags))
-	sort.Sort(cli.FlagsByName(configCommand.Flags))
+	sort.Sort(cli.FlagsByName(criocli.ConfigCommand.Flags))
 
 	app.Metadata["Env"] = map[string]string{
 		kubensmnt.EnvName: kubensmntHelp,
@@ -148,10 +148,11 @@ func main() {
 
 	app.Commands = criocli.DefaultCommands
 	app.Commands = append(app.Commands, []*cli.Command{
-		configCommand,
-		publishCommand,
-		versionCommand,
-		wipeCommand,
+		criocli.ConfigCommand,
+		criocli.PublishCommand,
+		criocli.VersionCommand,
+		criocli.WipeCommand,
+		criocli.StatusCommand,
 	}...)
 
 	app.Before = func(c *cli.Context) (err error) {
@@ -339,6 +340,13 @@ func main() {
 			if err := utils.SyncParent(config.CleanShutdownFile); err != nil {
 				logrus.Errorf("Failed to sync parent directory of clean shutdown file: %v", err)
 			}
+		}
+
+		// We always use 'Volatile: true' when creating containers, which means that in
+		// the event of an unclean shutdown, we might lose track of containers and layers.
+		// We need to call the garbage collection function to clean up the redundant files.
+		if err := crioServer.Store().GarbageCollect(); err != nil {
+			logrus.Errorf("Attempts to clean up unreferenced old container leftovers failed: %v", err)
 		}
 
 		v1.RegisterRuntimeServiceServer(grpcServer, crioServer)

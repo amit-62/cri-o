@@ -38,9 +38,10 @@ type ListPodsReport struct {
 }
 
 type ListPodContainer struct {
-	Id     string //nolint:revive,stylecheck
-	Names  string
-	Status string
+	Id           string //nolint:revive,stylecheck
+	Names        string
+	Status       string
+	RestartCount uint
 }
 
 type PodPauseOptions struct {
@@ -104,8 +105,9 @@ type PodRmOptions struct {
 }
 
 type PodRmReport struct {
-	Err error
-	Id  string //nolint:revive,stylecheck
+	RemovedCtrs map[string]error
+	Err         error
+	Id          string //nolint:revive,stylecheck
 }
 
 // PddSpec is an abstracted version of PodSpecGen designed to eventually accept options
@@ -129,11 +131,13 @@ type PodCreateOptions struct {
 	InfraName          string            `json:"container_name,omitempty"`
 	InfraCommand       *string           `json:"container_command,omitempty"`
 	InfraConmonPidFile string            `json:"container_conmon_pidfile,omitempty"`
+	Ipc                string            `json:"ipc,omitempty"`
 	Labels             map[string]string `json:"labels,omitempty"`
 	Name               string            `json:"name,omitempty"`
 	Net                *NetOptions       `json:"net,omitempty"`
 	Share              []string          `json:"share,omitempty"`
 	ShareParent        *bool             `json:"share_parent,omitempty"`
+	Restart            string            `json:"restart,omitempty"`
 	Pid                string            `json:"pid,omitempty"`
 	Cpus               float64           `json:"cpus,omitempty"`
 	CpusetCpus         string            `json:"cpuset_cpus,omitempty"`
@@ -259,6 +263,7 @@ type ContainerCreateOptions struct {
 	SecurityOpt        []string `json:"security_opt,omitempty"`
 	SdNotifyMode       string
 	ShmSize            string
+	ShmSizeSystemd     string
 	SignaturePolicy    string
 	StartupHCCmd       string
 	StartupHCInterval  string
@@ -268,8 +273,8 @@ type ContainerCreateOptions struct {
 	StopSignal         string
 	StopTimeout        uint
 	StorageOpts        []string
-	SubUIDName         string
 	SubGIDName         string
+	SubUIDName         string
 	Sysctl             []string `json:"sysctl,omitempty"`
 	Systemd            string
 	Timeout            uint
@@ -300,13 +305,14 @@ type ContainerCreateOptions struct {
 
 	CgroupConf []string
 
+	GroupEntry  string
 	PasswdEntry string
 }
 
 func NewInfraContainerCreateOptions() ContainerCreateOptions {
 	options := ContainerCreateOptions{
 		IsInfra:          true,
-		ImageVolume:      "bind",
+		ImageVolume:      define.TypeBind,
 		MemorySwappiness: -1,
 	}
 	return options
@@ -349,6 +355,12 @@ func ToPodSpecGen(s specgen.PodSpecGenerator, p *PodCreateOptions) (*specgen.Pod
 		return nil, err
 	}
 	s.Pid = out
+
+	out, err = specgen.ParseNamespace(p.Ipc)
+	if err != nil {
+		return nil, err
+	}
+	s.Ipc = out
 	s.Hostname = p.Hostname
 	s.ExitPolicy = p.ExitPolicy
 	s.Labels = p.Labels
@@ -366,6 +378,14 @@ func ToPodSpecGen(s specgen.PodSpecGenerator, p *PodCreateOptions) (*specgen.Pod
 	s.ShareParent = p.ShareParent
 	s.PodCreateCommand = p.CreateCommand
 	s.VolumesFrom = p.VolumesFrom
+	if p.Restart != "" {
+		policy, retries, err := util.ParseRestartPolicy(p.Restart)
+		if err != nil {
+			return nil, err
+		}
+		s.RestartPolicy = policy
+		s.RestartRetries = &retries
+	}
 
 	// Networking config
 

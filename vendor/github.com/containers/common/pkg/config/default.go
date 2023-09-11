@@ -28,12 +28,10 @@ const (
 	_defaultTransport = "docker://"
 
 	// _defaultImageVolumeMode is a mode to handle built-in image volumes.
-	_defaultImageVolumeMode = "bind"
+	_defaultImageVolumeMode = _typeBind
 )
 
 var (
-	// DefaultInitPath is the default path to the container-init binary.
-	DefaultInitPath = "/usr/libexec/podman/catatonit"
 	// DefaultInfraImage is the default image to run as infrastructure containers in pods.
 	DefaultInfraImage = ""
 	// DefaultRootlessSHMLockPath is the default path for rootless SHM locks.
@@ -60,6 +58,7 @@ var (
 		"CAP_SETGID",
 		"CAP_SETPCAP",
 		"CAP_SETUID",
+		"CAP_SYS_CHROOT",
 	}
 
 	// Search these locations in which CNIPlugins can be installed.
@@ -69,6 +68,12 @@ var (
 		"/usr/local/lib/cni",
 		"/usr/lib/cni",
 		"/opt/cni/bin",
+	}
+	DefaultNetavarkPluginDirs = []string{
+		"/usr/local/libexec/netavark",
+		"/usr/libexec/netavark",
+		"/usr/local/lib/netavark",
+		"/usr/lib/netavark",
 	}
 	DefaultSubnetPools = []SubnetPool{
 		// 10.89.0.0/24-10.255.255.0/24
@@ -104,6 +109,8 @@ const (
 	CgroupfsCgroupsManager = "cgroupfs"
 	// DefaultApparmorProfile  specifies the default apparmor profile for the container.
 	DefaultApparmorProfile = apparmor.Profile
+	// DefaultDBBackend specifies the default database backend to be used by Podman.
+	DefaultDBBackend = DBBackendBoltDB
 	// DefaultHostsFile is the default path to the hosts file.
 	DefaultHostsFile = "/etc/hosts"
 	// SystemdCgroupsManager represents systemd native cgroup manager.
@@ -206,11 +213,13 @@ func DefaultConfig() (*Config, error) {
 			UserNSSize: DefaultUserNSSize, // Deprecated
 		},
 		Network: NetworkConfig{
-			DefaultNetwork:     "podman",
-			DefaultSubnet:      DefaultSubnet,
-			DefaultSubnetPools: DefaultSubnetPools,
-			DNSBindPort:        0,
-			CNIPluginDirs:      DefaultCNIPluginDirs,
+			DefaultNetwork:            "podman",
+			DefaultSubnet:             DefaultSubnet,
+			DefaultSubnetPools:        DefaultSubnetPools,
+			DefaultRootlessNetworkCmd: "slirp4netns",
+			DNSBindPort:               0,
+			CNIPluginDirs:             DefaultCNIPluginDirs,
+			NetavarkPluginDirs:        DefaultNetavarkPluginDirs,
 		},
 		Engine:  *defaultEngineConfig,
 		Secrets: defaultSecretConfig(),
@@ -273,6 +282,7 @@ func defaultConfigFromMemory() (*EngineConfig, error) {
 	c.VolumePath = filepath.Join(storeOpts.GraphRoot, "volumes")
 
 	c.VolumePluginTimeout = DefaultVolumePluginTimeout
+	c.CompressionFormat = "gzip"
 
 	c.HelperBinariesDir = defaultHelperBinariesDir
 	if additionalHelperBinariesDir != "" {
@@ -387,6 +397,7 @@ func defaultConfigFromMemory() (*EngineConfig, error) {
 		"/run/current-system/sw/bin/conmonrs",
 	}
 	c.PullPolicy = DefaultPullPolicy
+	c.DBBackend = stringBoltDB
 	c.RuntimeSupportsJSON = []string{
 		"crun",
 		"runc",
@@ -414,6 +425,7 @@ func defaultConfigFromMemory() (*EngineConfig, error) {
 
 	c.PodExitPolicy = defaultPodExitPolicy
 	c.SSHConfig = getDefaultSSHConfig()
+	c.KubeGenerateType = "pod"
 
 	return c, nil
 }

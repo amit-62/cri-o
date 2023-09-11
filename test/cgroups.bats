@@ -5,10 +5,10 @@ load helpers
 function setup() {
 	setup_test
 	newconfig="$TESTDIR/config.json"
+	sboxconfig="$TESTDIR/sandbox.json"
 	if [[ $RUNTIME_TYPE == vm ]]; then
 		skip "not applicable to vm runtime type"
 	fi
-
 }
 
 function teardown() {
@@ -61,7 +61,7 @@ EOF
 		skip "not yet supported by conmonrs"
 	fi
 
-	CONTAINER_CGROUP_MANAGER="systemd" CONTAINER_DROP_INFRA_CTR=false CONTAINER_MANAGE_NS_LIFECYCLE=false CONTAINER_CONMON_CGROUP="customcrioconmon.slice" start_crio
+	CONTAINER_CGROUP_MANAGER="systemd" CONTAINER_DROP_INFRA_CTR=false CONTAINER_CONMON_CGROUP="customcrioconmon.slice" start_crio
 
 	jq '	  .linux.cgroup_parent = "Burstablecriotest123.slice"' \
 		"$TESTDATA"/sandbox_config.json > "$TESTDIR"/sandbox_config_slice.json
@@ -70,6 +70,28 @@ EOF
 
 	output=$(systemctl status "crio-conmon-$pod_id.scope")
 	[[ "$output" == *"customcrioconmon.slice"* ]]
+}
+
+@test "conmon custom cgroup with no infra container" {
+	parent="Burstablecriotest123"
+	if [ "$CONTAINER_CGROUP_MANAGER" == "systemd" ]; then
+		parent="$parent".slice
+	fi
+	cgroup_base="/sys/fs/cgroup"
+	if ! is_cgroup_v2; then
+		cgroup_base="$cgroup_base"/memory
+	fi
+
+	CONTAINER_DROP_INFRA_CTR=true start_crio
+
+	jq --arg cg "$parent" '	  .linux.cgroup_parent = $cg' \
+		"$TESTDATA"/sandbox_config.json > "$TESTDIR"/sandbox_config_slice.json
+
+	pod_id=$(crictl runp "$TESTDIR"/sandbox_config_slice.json)
+	ls "$cgroup_base"/"$parent"/crio-"$pod_id"*
+
+	crictl rmp -fa
+	run ! ls "$cgroup_base"/"$parent"/crio-"$pod_id"*
 }
 
 @test "conmonrs custom cgroup with no infra container" {
@@ -121,7 +143,7 @@ EOF
 	    |     .linux.resources.memory_limit_in_bytes = 210763776' \
 		"$TESTDATA"/container_sleep.json > "$newconfig"
 
-	! crictl run "$newconfig" "$TESTDATA"/sandbox_config.json
+	run ! crictl run "$newconfig" "$TESTDATA"/sandbox_config.json
 }
 
 @test "ctr swap only configured if enabled" {
@@ -174,4 +196,27 @@ EOF
 	[[ "$output" == *"209715200"* ]]
 	output=$(crictl exec --sync "$ctr_id" sh -c "cat /sys/fs/cgroup/memory.high")
 	[[ "$output" == *"210763776"* ]]
+}
+
+@test "cpu-quota.crio.io can disable quota" {
+	if is_cgroup_v2; then
+		skip "node must be configured with cgroupv1 for this test"
+	fi
+	create_workload_with_allowed_annotation cpu-quota.crio.io
+
+	start_crio
+
+	jq '   .annotations["cpu-quota.crio.io"] = "disable"' \
+		"$TESTDATA"/sandbox_config.json > "$sboxconfig"
+
+	jq '   .annotations["cpu-quota.crio.io"] = "disable" |
+	       .linux.resources.cpu_shares = 1024 ' \
+		"$TESTDATA"/container_sleep.json > "$newconfig"
+
+	ctr_id=$(crictl run "$newconfig" "$sboxconfig")
+	set_container_pod_cgroup_root "cpu" "$ctr_id"
+	# TODO: add support for cgroupv2 when cpu load balancing is supported there.
+	cgroup_file="cpu.cfs_quota_us"
+	[[ $(cat "$CTR_CGROUP"/"$cgroup_file") == "-1" ]]
+	[[ $(cat "$POD_CGROUP"/"$cgroup_file") == "-1" ]]
 }

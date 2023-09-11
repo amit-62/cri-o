@@ -53,12 +53,7 @@ func (s *Server) removeContainerInPod(ctx context.Context, sb *sandbox.Sandbox, 
 	defer span.End()
 	if !sb.Stopped() {
 		if err := s.stopContainer(ctx, c, int64(10)); err != nil {
-			return fmt.Errorf("failed to stop container for removal")
-		}
-
-		if err := s.nri.stopContainer(ctx, sb, c); err != nil {
-			log.Warnf(ctx, "NRI container stop failed for container %s of pod %s: %v",
-				c.ID(), sb.ID(), err)
+			return fmt.Errorf("failed to stop container for removal %w", err)
 		}
 	}
 

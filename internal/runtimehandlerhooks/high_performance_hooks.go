@@ -10,19 +10,20 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cri-o/cri-o/internal/config/cgmgr"
+	"github.com/cri-o/cri-o/internal/config/node"
 	"github.com/cri-o/cri-o/internal/lib/sandbox"
 	"github.com/cri-o/cri-o/internal/log"
 	"github.com/cri-o/cri-o/internal/oci"
 	crioannotations "github.com/cri-o/cri-o/pkg/annotations"
 	"github.com/cri-o/cri-o/utils/cmdrunner"
 	"github.com/opencontainers/runc/libcontainer/cgroups"
-	"github.com/opencontainers/runc/libcontainer/cgroups/systemd"
+	libCtrMgr "github.com/opencontainers/runc/libcontainer/cgroups/manager"
+	"github.com/opencontainers/runc/libcontainer/configs"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+	"k8s.io/utils/cpuset"
 )
 
 const (
@@ -52,22 +53,14 @@ type HighPerformanceHooks struct {
 func (h *HighPerformanceHooks) PreStart(ctx context.Context, c *oci.Container, s *sandbox.Sandbox) error {
 	log.Infof(ctx, "Run %q runtime handler pre-start hook for the container %q", HighPerformance, c.ID())
 
-	if isCgroupParentBurstable(s) {
-		log.Infof(ctx, "Container %q is a burstable pod. Skip PreStart.", c.ID())
-		return nil
-	}
-	if isCgroupParentBestEffort(s) {
-		log.Infof(ctx, "Container %q is a besteffort pod. Skip PreStart.", c.ID())
-		return nil
-	}
-	if !isContainerRequestWholeCPU(c) {
-		log.Infof(ctx, "Container %q requests partial cpu(s). Skip PreStart", c.ID())
+	cSpec := c.Spec()
+	if !shouldRunHooks(ctx, c.ID(), &cSpec, s) {
 		return nil
 	}
 
 	// disable the CPU load balancing for the container CPUs
 	if shouldCPULoadBalancingBeDisabled(s.Annotations()) {
-		if err := setCPUSLoadBalancingWithRetry(ctx, c, false); err != nil {
+		if err := disableCPULoadBalancing(c); err != nil {
 			return fmt.Errorf("set CPU load balancing: %w", err)
 		}
 	}
@@ -83,31 +76,23 @@ func (h *HighPerformanceHooks) PreStart(ctx context.Context, c *oci.Container, s
 	// disable the CFS quota for the container CPUs
 	if shouldCPUQuotaBeDisabled(s.Annotations()) {
 		log.Infof(ctx, "Disable cpu cfs quota for container %q", c.ID())
-		cpuMountPoint, err := cgroups.FindCgroupMountpoint(cgroupMountPoint, "cpu")
-		if err != nil {
-			return err
-		}
-		if err := setCPUQuota(cpuMountPoint, s.CgroupParent(), c, false); err != nil {
+		if err := setCPUQuota(s.CgroupParent(), c); err != nil {
 			return fmt.Errorf("set CPU CFS quota: %w", err)
 		}
 	}
 
 	// Configure c-states for the container CPUs.
 	if configure, value := shouldCStatesBeConfigured(s.Annotations()); configure {
-		log.Infof(ctx, "Configure c-states for container %q to %q", c.ID(), value)
-		switch value {
-		case annotationEnable:
-			// Enable all c-states.
-			if err := setCPUPMQOSResumeLatency(c, "0"); err != nil {
+		maxLatency, err := convertAnnotationToLatency(value)
+		if err != nil {
+			return err
+		}
+
+		if maxLatency != "" {
+			log.Infof(ctx, "Configure c-states for container %q to %q (pm_qos_resume_latency_us: %q)", c.ID(), value, maxLatency)
+			if err := setCPUPMQOSResumeLatency(c, maxLatency); err != nil {
 				return fmt.Errorf("set CPU PM QOS resume latency: %w", err)
 			}
-		case annotationDisable:
-			// Lock the c-state to C0.
-			if err := setCPUPMQOSResumeLatency(c, "n/a"); err != nil {
-				return fmt.Errorf("set CPU PM QOS resume latency: %w", err)
-			}
-		default:
-			return fmt.Errorf("invalid annotation value %s", value)
 		}
 	}
 
@@ -128,24 +113,9 @@ func (h *HighPerformanceHooks) PreStop(ctx context.Context, c *oci.Container, s 
 	defer span.End()
 	log.Infof(ctx, "Run %q runtime handler pre-stop hook for the container %q", HighPerformance, c.ID())
 
-	if isCgroupParentBurstable(s) {
-		log.Infof(ctx, "Container %q is a burstable pod. Skip PreStop.", c.ID())
+	cSpec := c.Spec()
+	if !shouldRunHooks(ctx, c.ID(), &cSpec, s) {
 		return nil
-	}
-	if isCgroupParentBestEffort(s) {
-		log.Infof(ctx, "Container %q is a besteffort pod. Skip PreStop.", c.ID())
-		return nil
-	}
-	if !isContainerRequestWholeCPU(c) {
-		log.Infof(ctx, "Container %q requests partial cpu(s). Skip PreStop", c.ID())
-		return nil
-	}
-
-	// enable the CPU load balancing for the container CPUs
-	if shouldCPULoadBalancingBeDisabled(s.Annotations()) {
-		if err := setCPUSLoadBalancingWithRetry(ctx, c, true); err != nil {
-			return fmt.Errorf("set CPU load balancing: %w", err)
-		}
 	}
 
 	// enable the IRQ smp balancing for the container CPUs
@@ -176,6 +146,15 @@ func (h *HighPerformanceHooks) PreStop(ctx context.Context, c *oci.Container, s 
 	}
 
 	return nil
+}
+
+// If CPU load balancing is enabled, then *all* containers must run this PostStop hook.
+func (*HighPerformanceHooks) PostStop(ctx context.Context, c *oci.Container, s *sandbox.Sandbox) error {
+	// We could check if `!cpuLoadBalancingAllowed()` here, but it requires access to the config, which would be
+	// odd to plumb. Instead, always assume if they're using a HighPerformanceHook, they have CPULoadBalanceDisabled
+	// annotation allowed.
+	h := &DefaultCPULoadBalanceHooks{}
+	return h.PostStop(ctx, c, s)
 }
 
 func shouldCPULoadBalancingBeDisabled(annotations fields.Set) bool {
@@ -219,38 +198,13 @@ func annotationValueDeprecationWarning(annotation string) string {
 	return fmt.Sprintf("The usage of the annotation %q with value %q will be deprecated under 1.21", annotation, "true")
 }
 
-func isCgroupParentBurstable(s *sandbox.Sandbox) bool {
-	return strings.Contains(s.CgroupParent(), "burstable")
-}
-
-func isCgroupParentBestEffort(s *sandbox.Sandbox) bool {
-	return strings.Contains(s.CgroupParent(), "besteffort")
-}
-
-func isContainerRequestWholeCPU(c *oci.Container) bool {
-	return *(c.Spec().Linux.Resources.CPU.Shares)%1024 == 0
-}
-
-func setCPUSLoadBalancingWithRetry(ctx context.Context, c *oci.Container, enable bool) error {
-	log.Infof(ctx, "Disable cpu load balancing for container %q", c.ID())
-	// it is possible to have errors during reading or writing to sched_domain files because
-	// that kernel rebuilds it with updated values
-	// the retry will not fix it for 100% but should reduce the possibility for failures to minimum
-	// TODO: re-visit once we will have some more acceptable cgroups hierarchy to disable CPU load balancing
-	// correctly via cgroups, see -https://bugzilla.redhat.com/show_bug.cgi?id=1946801
-	return wait.PollImmediate(time.Second, 5*time.Second, func() (bool, error) {
-		if err := setCPUSLoadBalancing(c, enable, schedDomainDir); err != nil {
-			if os.IsNotExist(err) {
-				log.Errorf(ctx, "Failed to set CPU load balancing: %v", err)
-				return false, nil
-			}
-			return false, err
-		}
-		return true, nil
-	})
-}
-
-func setCPUSLoadBalancing(c *oci.Container, enable bool, schedDomainDir string) error {
+// disableCPULoadBalancing relies on the cpuset cgroup to disable load balancing for containers.
+// The requisite condition to allow this is `cpuset.sched_load_balance` field must be set to 0 for all cgroups
+// that intersect with `cpuset.cpus` of the container that desires load balancing.
+// Since CRI-O is the owner of the container cgroup, it must set this value for
+// the container. Some other entity (kubelet, external service) must ensure this is the case for all
+// other cgroups that intersect (at minimum: all parent cgroups of this cgroup).
+func disableCPULoadBalancing(c *oci.Container) error {
 	lspec := c.Spec().Linux
 	if lspec == nil ||
 		lspec.Resources == nil ||
@@ -259,50 +213,25 @@ func setCPUSLoadBalancing(c *oci.Container, enable bool, schedDomainDir string) 
 		return fmt.Errorf("find container %s CPUs", c.ID())
 	}
 
-	cpus, err := cpuset.Parse(lspec.Resources.CPU.Cpus)
+	if node.CgroupIsV2() {
+		return fmt.Errorf("disabling CPU load balancing on cgroupv2 not yet supported")
+	}
+
+	pid, err := c.Pid()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get pid of container %s: %w", c.ID(), err)
+	}
+	controllers, err := cgroups.ParseCgroupFile("/proc/" + strconv.Itoa(pid) + "/cgroup")
+	if err != nil {
+		return fmt.Errorf("failed to get cgroups of container %s: %w", c.ID(), err)
 	}
 
-	for _, cpu := range cpus.ToSlice() {
-		cpuSchedDomainDir := fmt.Sprintf("%s/cpu%d", schedDomainDir, cpu)
-		err := filepath.Walk(cpuSchedDomainDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if !info.Mode().IsRegular() || info.Name() != "flags" {
-				return nil
-			}
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-
-			flags, err := strconv.Atoi(strings.Trim(string(content), "\n"))
-			if err != nil {
-				return err
-			}
-
-			var newContent string
-			if enable {
-				newContent = strconv.Itoa(flags | 1)
-			} else {
-				// we should set the LSB to 0 to disable the load balancing for the specified CPU
-				// in case of sched domain all flags can be represented by the binary number 111111111111111 that equals
-				// to 32767 in the decimal form
-				// see https://github.com/torvalds/linux/blob/0fe5f9ca223573167c4c4156903d751d2c8e160e/include/linux/sched/topology.h#L14
-				// for more information regarding the sched domain flags
-				newContent = strconv.Itoa(flags & 32766)
-			}
-
-			return os.WriteFile(path, []byte(newContent), 0o644)
-		})
-		if err != nil {
-			return err
-		}
+	cpusetPath, ok := controllers["cpuset"]
+	if !ok {
+		return fmt.Errorf("failed to get cpuset of container %s", c.ID())
 	}
 
-	return nil
+	return cgroups.WriteFile("/sys/fs/cgroup/cpuset"+cpusetPath, "cpuset.sched_load_balance", "0")
 }
 
 func setIRQLoadBalancing(ctx context.Context, c *oci.Container, enable bool, irqSmpAffinityFile, irqBalanceConfigFile string) error {
@@ -354,64 +283,79 @@ func setIRQLoadBalancing(ctx context.Context, c *oci.Container, enable bool, irq
 	return nil
 }
 
-func setCPUQuota(cpuMountPoint, parentDir string, c *oci.Container, enable bool) error {
-	var rpath string
-	var err error
-	var cfsQuotaPath string
-	var parentCfsQuotaPath string
-	var cgroupManager cgmgr.CgroupManager
+func setCPUQuota(parentDir string, c *oci.Container) error {
+	containerCgroup, containerCgroupParent, systemd, err := containerCgroupAndParent(parentDir, c)
+	if err != nil {
+		return err
+	}
+	podCgroup := filepath.Base(containerCgroupParent)
+	podCgroupParent := filepath.Dir(containerCgroupParent)
+
+	if err := disableCPUQuotaForCgroup(podCgroup, podCgroupParent, systemd); err != nil {
+		return err
+	}
+	return disableCPUQuotaForCgroup(containerCgroup, containerCgroupParent, systemd)
+}
+
+func containerCgroupAndParent(parentDir string, c *oci.Container) (ctrCgroup, parentCgroup string, systemd bool, _ error) {
+	var (
+		cgroupManager cgmgr.CgroupManager
+		err           error
+	)
 
 	if strings.HasSuffix(parentDir, ".slice") {
-		// systemd fs
 		if cgroupManager, err = cgmgr.SetCgroupManager("systemd"); err != nil {
-			return nil
+			// Programming error, this is only possible if the manager string is invalid.
+			panic(err)
 		}
-		parentPath, err := systemd.ExpandSlice(parentDir)
-		if err != nil {
-			return err
-		}
-		parentCfsQuotaPath = filepath.Join(cpuMountPoint, parentPath, "cpu.cfs_quota_us")
-		if rpath, err = cgroupManager.ContainerCgroupAbsolutePath(parentDir, c.ID()); err != nil {
-			return err
-		}
-		cfsQuotaPath = filepath.Join(cpuMountPoint, rpath, "cpu.cfs_quota_us")
-	} else {
-		// cgroupfs
-		if cgroupManager, err = cgmgr.SetCgroupManager("cgroupfs"); err != nil {
-			return nil
-		}
-		parentCfsQuotaPath = filepath.Join(cpuMountPoint, parentDir, "cpu.cfs_quota_us")
-		if rpath, err = cgroupManager.ContainerCgroupAbsolutePath(parentDir, c.ID()); err != nil {
-			return err
-		}
-		cfsQuotaPath = filepath.Join(cpuMountPoint, rpath, "cpu.cfs_quota_us")
+	} else if cgroupManager, err = cgmgr.SetCgroupManager("cgroupfs"); err != nil {
+		// Programming error, this is only possible if the manager string is invalid.
+		panic(err)
 	}
+	cgroupPath, err := cgroupManager.ContainerCgroupAbsolutePath(parentDir, c.ID())
+	if err != nil {
+		return "", "", false, err
+	}
+	containerCgroup := filepath.Base(cgroupPath)
+	// A quirk of libcontainer's cgroup driver.
+	// See explanation in disableCPUQuotaForCgroup function.
+	if cgroupManager.IsSystemd() {
+		containerCgroup = c.ID()
+	}
+	return containerCgroup, filepath.Dir(cgroupPath), cgroupManager.IsSystemd(), nil
+}
 
-	if _, err := os.Stat(cfsQuotaPath); err != nil {
-		return err
-	}
-	if _, err := os.Stat(parentCfsQuotaPath); err != nil {
+func disableCPUQuotaForCgroup(cgroup, parent string, systemd bool) error {
+	mgr, err := libctrManager(cgroup, parent, systemd)
+	if err != nil {
 		return err
 	}
 
-	if enable {
-		// there should have no use case to get here, as the pod cgroup will be deleted when the pod end
-		if err := os.WriteFile(cfsQuotaPath, []byte("0"), 0o644); err != nil {
-			return err
-		}
-		if err := os.WriteFile(parentCfsQuotaPath, []byte("0"), 0o644); err != nil {
-			return err
-		}
-	} else {
-		if err := os.WriteFile(cfsQuotaPath, []byte("-1"), 0o644); err != nil {
-			return err
-		}
-		if err := os.WriteFile(parentCfsQuotaPath, []byte("-1"), 0o644); err != nil {
-			return err
-		}
-	}
+	return mgr.Set(&configs.Resources{
+		SkipDevices: true,
+		CpuQuota:    -1,
+	})
+}
 
-	return nil
+func libctrManager(cgroup, parent string, systemd bool) (cgroups.Manager, error) {
+	if systemd {
+		parent = filepath.Base(parent)
+	}
+	cg := &configs.Cgroup{
+		Name:   cgroup,
+		Parent: parent,
+		Resources: &configs.Resources{
+			SkipDevices: true,
+		},
+		Systemd: systemd,
+		// If the cgroup manager is systemd, then libcontainer
+		// will construct the cgroup path (for scopes) as:
+		// ScopePrefix-Name.scope. For slices, and for cgroupfs manager,
+		// this will be ignored.
+		// See: https://github.com/opencontainers/runc/tree/main/libcontainer/cgroups/systemd/common.go:getUnitName
+		ScopePrefix: cgmgr.CrioPrefix,
+	}
+	return libCtrMgr.New(cg)
 }
 
 // setCPUPMQOSResumeLatency sets the pm_qos_resume_latency_us for a cpu and stores the original
@@ -436,7 +380,7 @@ func doSetCPUPMQOSResumeLatency(c *oci.Container, latency, cpuDir, cpuSaveDir st
 		return err
 	}
 
-	for _, cpu := range cpus.ToSlice() {
+	for _, cpu := range cpus.List() {
 		latencyFile := fmt.Sprintf("%s/cpu%d/power/pm_qos_resume_latency_us", cpuDir, cpu)
 		cpuPowerSaveDir := fmt.Sprintf("%s/cpu%d/power", cpuSaveDir, cpu)
 		latencyFileOrig := path.Join(cpuPowerSaveDir, "pm_qos_resume_latency_us")
@@ -534,7 +478,7 @@ func doSetCPUFreqGovernor(c *oci.Container, governor, cpuDir, cpuSaveDir string)
 		return err
 	}
 
-	for _, cpu := range cpus.ToSlice() {
+	for _, cpu := range cpus.List() {
 		governorFile := fmt.Sprintf("%s/cpu%d/cpufreq/scaling_governor", cpuDir, cpu)
 		cpuFreqSaveDir := fmt.Sprintf("%s/cpu%d/cpufreq", cpuSaveDir, cpu)
 		governorFileOrig := path.Join(cpuFreqSaveDir, "scaling_governor")
@@ -658,4 +602,83 @@ func RestoreIrqBalanceConfig(ctx context.Context, irqBalanceConfigFile, irqBanne
 		}
 	}
 	return nil
+}
+
+func ShouldCPUQuotaBeDisabled(ctx context.Context, cid string, cSpec *specs.Spec, s *sandbox.Sandbox, annotations fields.Set) bool {
+	if !shouldRunHooks(ctx, cid, cSpec, s) {
+		return false
+	}
+	if annotations[crioannotations.CPUQuotaAnnotation] == annotationTrue {
+		log.Warnf(context.TODO(), annotationValueDeprecationWarning(crioannotations.CPUQuotaAnnotation))
+	}
+
+	return annotations[crioannotations.CPUQuotaAnnotation] == annotationTrue ||
+		annotations[crioannotations.CPUQuotaAnnotation] == annotationDisable
+}
+
+func shouldRunHooks(ctx context.Context, id string, cSpec *specs.Spec, s *sandbox.Sandbox) bool {
+	if isCgroupParentBurstable(s) {
+		log.Infof(ctx, "Container %q is a burstable pod. Skip PreStart.", id)
+		return false
+	}
+	if isCgroupParentBestEffort(s) {
+		log.Infof(ctx, "Container %q is a besteffort pod. Skip PreStart.", id)
+		return false
+	}
+	if !isContainerRequestWholeCPU(cSpec) {
+		log.Infof(ctx, "Container %q requests partial cpu(s). Skip PreStart", id)
+		return false
+	}
+	return true
+}
+
+func isCgroupParentBurstable(s *sandbox.Sandbox) bool {
+	return strings.Contains(s.CgroupParent(), "burstable")
+}
+
+func isCgroupParentBestEffort(s *sandbox.Sandbox) bool {
+	return strings.Contains(s.CgroupParent(), "besteffort")
+}
+
+func isContainerRequestWholeCPU(cSpec *specs.Spec) bool {
+	return *(cSpec.Linux.Resources.CPU.Shares)%1024 == 0
+}
+
+// convertAnnotationToLatency converts the cpu-c-states.crio.io annotation to a maximum
+// latency value in microseconds.
+//
+// The cpu-c-states.crio.io annotation can be used to control c-states in several ways:
+//
+//	enable: enable all c-states (cpu-c-states.crio.io: "enable")
+//	disable: disable all c-states (cpu-c-states.crio.io: "disable")
+//	max_latency: enable c-states with a maximum latency in microseconds
+//	             (for example,  cpu-c-states.crio.io: "max_latency:10")
+//
+// Examples:
+//
+// cpu-c-states.crio.io: "disable" (disable all c-states)
+// cpu-c-states.crio.io: "enable" (enable all c-states)
+// cpu-c-states.crio.io: "max_latency:10" (use a max latency of 10us)
+func convertAnnotationToLatency(annotation string) (maxLatency string, err error) {
+	//nolint:gocritic // this would not be better as a switch statement
+	if annotation == annotationEnable {
+		// Enable all c-states.
+		return "0", nil
+	} else if annotation == annotationDisable {
+		// Disable all c-states.
+		return "n/a", nil //nolint:goconst // there are not 4 occurrences of this string
+	} else if strings.HasPrefix(annotation, "max_latency:") {
+		// Use the latency provided
+		latency, err := strconv.Atoi(strings.TrimPrefix(annotation, "max_latency:"))
+		if err != nil {
+			return "", err
+		}
+
+		// Latency must be greater than 0
+		if latency > 0 {
+			return strconv.Itoa(latency), nil
+		}
+	}
+
+	return "", fmt.Errorf("invalid annotation value %s", annotation)
 }

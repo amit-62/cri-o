@@ -42,6 +42,35 @@ func (c *ContainerServer) ContainerCheckpoint(
 		return "", fmt.Errorf("container %s is not running", ctr.ID())
 	}
 
+	// At this point the container needs to be paused. As we first checkpoint
+	// the processes in the container and the container will continue to run
+	// after checkpointing, there is a chance that the changed files we include
+	// in the checkpoint archive might change by the now again running processes
+	// in the container.
+	// Assuming this uses runc/crun (the OCI runtime is currently the only one
+	// supporting checkpointing), PauseContainer() will use the cgroup freezer
+	// to freeze the processes. CRIU will also use the cgroup freezer to freeze
+	// the processes if possible. If the cgroup is already frozen by runc/crun
+	// CRIU will not change the freezer status.
+	if err = c.runtime.PauseContainer(ctx, ctr); err != nil {
+		return "", fmt.Errorf("failed to pause container %q before checkpointing: %w", ctr.ID(), err)
+	}
+	defer func() {
+		if err := c.runtime.UpdateContainerStatus(ctx, ctr); err != nil {
+			log.Errorf(ctx, "Failed to update container status: %q: %v", ctr.ID(), err)
+		}
+		if ctr.State().Status == oci.ContainerStatePaused {
+			err := c.runtime.UnpauseContainer(ctx, ctr)
+			if err != nil {
+				log.Errorf(ctx, "Failed to unpause container: %q: %v", ctr.ID(), err)
+			}
+		}
+		// container state needs to be written _after_ unpausing
+		if err = c.ContainerStateToDisk(ctx, ctr); err != nil {
+			log.Warnf(ctx, "Unable to write containers %s state to disk: %v", ctr.ID(), err)
+		}
+	}()
+
 	if opts.TargetFile != "" {
 		if err := c.prepareCheckpointExport(ctr); err != nil {
 			return "", fmt.Errorf("failed to write config dumps for container %s: %w", ctr.ID(), err)
@@ -56,11 +85,10 @@ func (c *ContainerServer) ContainerCheckpoint(
 			return "", fmt.Errorf("failed to write file system changes of container %s: %w", ctr.ID(), err)
 		}
 	}
-	if err := c.storageRuntimeServer.StopContainer(ctx, ctr.ID()); err != nil {
-		return "", fmt.Errorf("failed to unmount container %s: %w", ctr.ID(), err)
-	}
-	if err := c.ContainerStateToDisk(ctx, ctr); err != nil {
-		log.Warnf(ctx, "Unable to write containers %s state to disk: %v", ctr.ID(), err)
+	if !opts.KeepRunning {
+		if err := c.storageRuntimeServer.StopContainer(ctx, ctr.ID()); err != nil {
+			return "", fmt.Errorf("failed to unmount container %s: %w", ctr.ID(), err)
+		}
 	}
 
 	if !opts.Keep {
@@ -153,6 +181,8 @@ func (c *ContainerServer) prepareCheckpointExport(ctr *oci.Container) error {
 	config := &metadata.ContainerConfig{
 		ID:              ctr.ID(),
 		Name:            ctr.Name(),
+		RootfsImage:     ctr.Image(),
+		RootfsImageRef:  ctr.ImageRef(),
 		RootfsImageName: ctr.ImageName(),
 		CreatedTime:     ctr.CreatedAt(),
 		OCIRuntime: func() string {
@@ -174,7 +204,7 @@ func (c *ContainerServer) prepareCheckpointExport(ctr *oci.Container) error {
 	// directories. This is disabled during restore as CRIU requires the bind mount
 	// source to be of the same type. Directories need to be directories and regular
 	// files need to be regular files. CRIU will fail to bind mount a directory on
-	// a file. Especiallay when restoring a Kubernetes container outside of Kubernetes
+	// a file. Especially when restoring a Kubernetes container outside of Kubernetes
 	// a couple of bind mounts are files (e.g. /etc/resolv.conf). To solve this
 	// CRI-O is now tracking all bind mount types in the checkpoint archive. This
 	// way it is possible to know if a missing bind mount needs to be a file or a

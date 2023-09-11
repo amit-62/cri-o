@@ -10,14 +10,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -33,17 +32,19 @@ import (
 	"github.com/cri-o/cri-o/internal/oci"
 	"github.com/cri-o/cri-o/internal/resourcestore"
 	"github.com/cri-o/cri-o/internal/runtimehandlerhooks"
+	"github.com/cri-o/cri-o/internal/signals"
 	"github.com/cri-o/cri-o/internal/storage"
 	"github.com/cri-o/cri-o/internal/version"
 	libconfig "github.com/cri-o/cri-o/pkg/config"
 	"github.com/cri-o/cri-o/server/metrics"
-	"github.com/cri-o/cri-o/server/streaming"
 	"github.com/cri-o/cri-o/utils"
 	"github.com/fsnotify/fsnotify"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+	"k8s.io/kubelet/pkg/cri/streaming"
+	kubetypes "k8s.io/kubelet/pkg/types"
 
 	nriIf "github.com/cri-o/cri-o/internal/nri"
 )
@@ -89,6 +90,9 @@ type Server struct {
 	seccompNotifierChan chan seccomp.Notification
 	seccompNotifiers    sync.Map
 
+	containerEventClients           sync.Map
+	containerEventStreamBroadcaster sync.Once
+
 	// NRI runtime interface
 	nri *nriAPI
 }
@@ -99,6 +103,7 @@ type pullArguments struct {
 	image         string
 	sandboxCgroup string
 	credentials   imageTypes.DockerAuthConfig
+	namespace     string
 }
 
 // pullOperation is used to synchronize parallel pull operations via the
@@ -254,7 +259,7 @@ func (s *Server) restore(ctx context.Context) []string {
 		}
 	}
 
-	// Go through all the containers and check if it can be restored. If an error occurs, delete the conainer and
+	// Go through all the containers and check if it can be restored. If an error occurs, delete the container and
 	// release the name associated with you.
 	for containerID := range podContainers {
 		err := s.LoadContainer(ctx, containerID)
@@ -428,7 +433,13 @@ func New(
 		}
 	}
 
-	hostportManager := hostport.NewMetaHostportManager()
+	// Check for hostport mapping
+	var hostportManager hostport.HostPortManager
+	if config.RuntimeConfig.DisableHostPortMapping {
+		hostportManager = hostport.NewNoopHostportManager()
+	} else {
+		hostportManager = hostport.NewMetaHostportManager()
+	}
 
 	idMappings, err := getIDMappings(config)
 	if err != nil {
@@ -512,11 +523,12 @@ func New(
 		streamServerConfig.TLSConfig = &tls.Config{
 			GetConfigForClient: certCache.GetConfigForClient,
 			Certificates:       []tls.Certificate{cert},
+			MinVersion:         tls.VersionTLS12,
 		}
 	}
 	s.stream.ctx = ctx
 	s.stream.runtimeServer = s
-	s.stream.streamServer, err = streaming.NewServer(ctx, &streamServerConfig, s.stream)
+	s.stream.streamServer, err = streaming.NewServer(streamServerConfig, s.stream)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create streaming server")
 	}
@@ -531,8 +543,7 @@ func New(
 
 	log.Debugf(ctx, "Sandboxes: %v", s.ContainerServer.ListSandboxes())
 
-	// Start a configuration watcher for the default config
-	s.config.StartWatcher()
+	s.startReloadWatcher(ctx)
 
 	// Start the metrics server if configured to be enabled
 	if s.config.EnableMetrics {
@@ -563,6 +574,26 @@ func New(
 	}
 
 	return s, nil
+}
+
+// startReloadWatcher starts a new SIGHUP go routine.
+func (s *Server) startReloadWatcher(ctx context.Context) {
+	// Setup the signal notifier
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, signals.Hup)
+
+	go func() {
+		for {
+			// Block until the signal is received
+			<-ch
+			if err := s.config.Reload(); err != nil {
+				logrus.Errorf("Unable to reload configuration: %v", err)
+				continue
+			}
+		}
+	}()
+
+	log.Infof(ctx, "Registered SIGHUP reload watcher")
 }
 
 func useDefaultUmask() {
@@ -877,13 +908,16 @@ func (s *Server) handleExit(ctx context.Context, event fsnotify.Event) {
 	c := s.GetContainer(ctx, containerID)
 	nriCtr := c
 	resource := "container"
+	var sb *sandbox.Sandbox
 	if c == nil {
-		sb := s.GetSandbox(containerID)
+		sb = s.GetSandbox(containerID)
 		if sb == nil {
 			return
 		}
 		c = sb.InfraContainer()
 		resource = "sandbox infra"
+	} else {
+		sb = s.GetSandbox(c.Sandbox())
 	}
 	log.Debugf(ctx, "%s exited and found: %v", resource, containerID)
 	if err := s.Runtime().UpdateContainerStatus(ctx, c); err != nil {
@@ -897,6 +931,15 @@ func (s *Server) handleExit(ctx context.Context, event fsnotify.Event) {
 	if nriCtr != nil {
 		if err := s.nri.stopContainer(ctx, nil, nriCtr); err != nil {
 			log.Warnf(ctx, "NRI stop container request of %s failed: %v", nriCtr.ID(), err)
+		}
+	}
+
+	hooks, err := runtimehandlerhooks.GetRuntimeHandlerHooks(ctx, &s.config, sb.RuntimeHandler(), sb.Annotations())
+	if err != nil {
+		log.Warnf(ctx, "Failed to get runtime handler %q hooks", sb.RuntimeHandler())
+	} else if hooks != nil {
+		if err := hooks.PostStop(ctx, c, sb); err != nil {
+			log.Errorf(ctx, "Failed to run post-stop hook for container %s: %v", c.ID(), err)
 		}
 	}
 
@@ -1003,6 +1046,7 @@ func (s *Server) generateCRIEvent(ctx context.Context, container *oci.Container,
 		log.Debugf(ctx, "Container event %s generated for %s", eventType, container.ID())
 	default:
 		log.Errorf(ctx, "GenerateCRIEvent: failed to generate event %s for container %s", eventType, container.ID())
+		metrics.Instance().MetricContainersEventsDroppedInc()
 		return
 	}
 }

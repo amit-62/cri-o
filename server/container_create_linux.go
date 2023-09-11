@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/containers/buildah/util"
 	"github.com/containers/common/pkg/subscriptions"
+	"github.com/containers/common/pkg/util"
 	"github.com/containers/podman/v4/pkg/rootless"
 	selinux "github.com/containers/podman/v4/pkg/selinux"
 	cstorage "github.com/containers/storage"
@@ -21,6 +23,7 @@ import (
 	"github.com/cri-o/cri-o/internal/config/rdt"
 	ctrfactory "github.com/cri-o/cri-o/internal/factory/container"
 	"github.com/cri-o/cri-o/internal/lib/sandbox"
+	"github.com/cri-o/cri-o/internal/linklogs"
 	"github.com/cri-o/cri-o/internal/log"
 	oci "github.com/cri-o/cri-o/internal/oci"
 	"github.com/cri-o/cri-o/internal/storage"
@@ -31,6 +34,7 @@ import (
 	"golang.org/x/net/context"
 	"golang.org/x/sys/unix"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+	kubeletTypes "k8s.io/kubelet/pkg/types"
 
 	"github.com/intel/goresctrl/pkg/blockio"
 )
@@ -233,9 +237,6 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 
 	imageName := imgResult.Name
 	imageRef := imgResult.ID
-	if len(imgResult.RepoDigests) > 0 {
-		imageRef = imgResult.RepoDigests[0]
-	}
 
 	labelOptions, err := ctr.SelinuxLabel(sb.ProcessLabel())
 	if err != nil {
@@ -320,7 +321,7 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 	cgroup2RW := node.CgroupIsV2() && sb.Annotations()[crioann.Cgroup2RWAnnotation] == "true"
 
 	s.resourceStore.SetStageForResource(ctx, ctr.Name(), "container volume configuration")
-	containerVolumes, ociMounts, err := addOCIBindMounts(ctx, ctr, mountLabel, s.config.RuntimeConfig.BindMountPrefix, s.config.AbsentMountSourcesToReject, maybeRelabel, skipRelabel, cgroup2RW)
+	containerVolumes, ociMounts, err := addOCIBindMounts(ctx, ctr, mountLabel, s.config.RuntimeConfig.BindMountPrefix, s.config.AbsentMountSourcesToReject, maybeRelabel, skipRelabel, cgroup2RW, s.Config().Root)
 	if err != nil {
 		return nil, err
 	}
@@ -619,15 +620,15 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 	specgen.AddProcessEnv("HOSTNAME", sb.Hostname())
 
 	created := time.Now()
+	seccompRef := types.SecurityProfile_Unconfined.String()
 	if !ctr.Privileged() {
-		notifier, err := s.config.Seccomp().Setup(
+		notifier, ref, err := s.config.Seccomp().Setup(
 			ctx,
 			s.seccompNotifierChan,
 			containerID,
 			sb.Annotations(),
 			specgen,
 			securityContext.Seccomp,
-			containerConfig.Linux.SecurityContext.SeccompProfilePath,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("setup seccomp: %w", err)
@@ -635,6 +636,7 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 		if notifier != nil {
 			s.seccompNotifiers.Store(containerID, notifier)
 		}
+		seccompRef = ref
 	}
 
 	// Get RDT class
@@ -647,8 +649,13 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 		// TODO: patch runtime-tools to support setting ClosID via a helper func similar to SetLinuxIntelRdtL3CacheSchema()
 		specgen.Config.Linux.IntelRdt = &rspec.LinuxIntelRdt{ClosID: rdt.ResctrlPrefix + rdtClass}
 	}
-
-	err = ctr.SpecAddAnnotations(ctx, sb, containerVolumes, mountPoint, containerImageConfig.Config.StopSignal, imgResult, s.config.CgroupManager().IsSystemd(), node.SystemdHasCollectMode())
+	// compute the runtime path for a given container
+	platform := containerInfo.Config.Platform.OS + "/" + containerInfo.Config.Platform.Architecture
+	runtimePath, err := s.Runtime().PlatformRuntimePath(sb.RuntimeHandler(), platform)
+	if err != nil {
+		return nil, err
+	}
+	err = ctr.SpecAddAnnotations(ctx, sb, containerVolumes, mountPoint, containerImageConfig.Config.StopSignal, imgResult, s.config.CgroupManager().IsSystemd(), node.SystemdHasCollectMode(), seccompRef, runtimePath)
 	if err != nil {
 		return nil, err
 	}
@@ -800,6 +807,18 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 	} else if err := specgen.RemoveLinuxNamespace(string(rspec.UserNamespace)); err != nil {
 		return nil, err
 	}
+	if v := sb.Annotations()[crioann.UmaskAnnotation]; v != "" {
+		umaskRegexp := regexp.MustCompile(`^[0-7]{1,4}$`)
+		if !umaskRegexp.MatchString(v) {
+			return nil, fmt.Errorf("invalid umask string %s", v)
+		}
+		decVal, err := strconv.ParseUint(sb.Annotations()[crioann.UmaskAnnotation], 8, 32)
+		if err != nil {
+			return nil, err
+		}
+		umask := uint32(decVal)
+		specgen.Config.Process.User.Umask = &umask
+	}
 
 	if containerIDMappings == nil {
 		rootPair = idtools.IDPair{UID: 0, GID: 0}
@@ -832,6 +851,12 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 		}
 	}()
 
+	if emptyDirVolName, ok := sb.Annotations()[crioann.LinkLogsAnnotation]; ok {
+		if err := linklogs.LinkContainerLogs(ctx, sb.Labels()[kubeletTypes.KubernetesPodUIDLabel], emptyDirVolName, ctr.ID(), containerConfig.Metadata); err != nil {
+			log.Warnf(ctx, "Failed to link container logs: %v", err)
+		}
+	}
+
 	saveOptions := generate.ExportOptions{}
 	if err := specgen.SaveToFile(filepath.Join(containerInfo.Dir, "config.json"), saveOptions); err != nil {
 		return nil, err
@@ -843,7 +868,10 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 
 	ociContainer.SetSpec(specgen.Config)
 	ociContainer.SetMountPoint(mountPoint)
-	ociContainer.SetSeccompProfilePath(containerConfig.Linux.SecurityContext.SeccompProfilePath)
+	ociContainer.SetSeccompProfilePath(seccompRef)
+	if runtimePath != "" {
+		ociContainer.SetRuntimePathForPlatform(runtimePath)
+	}
 
 	for _, cv := range containerVolumes {
 		ociContainer.AddVolume(cv)
@@ -891,7 +919,7 @@ func clearReadOnly(m *rspec.Mount) {
 	m.Options = append(m.Options, "rw")
 }
 
-func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel, bindMountPrefix string, absentMountSourcesToReject []string, maybeRelabel, skipRelabel, cgroup2RW bool) ([]oci.ContainerVolume, []rspec.Mount, error) {
+func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel, bindMountPrefix string, absentMountSourcesToReject []string, maybeRelabel, skipRelabel, cgroup2RW bool, storageRoot string) ([]oci.ContainerVolume, []rspec.Mount, error) {
 	ctx, span := log.StartSpan(ctx)
 	defer span.End()
 
@@ -946,6 +974,12 @@ func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel,
 		if m.HostPath == "/" && dest == "/" {
 			log.Warnf(ctx, "Configuration specifies mounting host root to the container root.  This is dangerous (especially with privileged containers) and should be avoided.")
 		}
+
+		if isSubDirectoryOf(storageRoot, m.HostPath) {
+			log.Infof(ctx, "Mount propogration for the host path %s will be set to HostToContainer as it includes the container storage root", m.HostPath)
+			m.Propagation = types.MountPropagation_PROPAGATION_HOST_TO_CONTAINER
+		}
+
 		src := filepath.Join(bindMountPrefix, m.HostPath)
 
 		resolvedSrc, err := resolveSymbolicLink(bindMountPrefix, src)
@@ -1018,6 +1052,8 @@ func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel,
 			} else if err := securityLabel(src, mountLabel, false, maybeRelabel); err != nil {
 				return nil, nil, err
 			}
+		} else {
+			log.Debugf(ctx, "Skipping relabel for %s because kubelet did not request it", src)
 		}
 
 		volumes = append(volumes, oci.ContainerVolume{
@@ -1057,16 +1093,16 @@ func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel,
 }
 
 func getOCIMappings(m []*types.IDMapping) []rspec.LinuxIDMapping {
-	if m == nil {
+	if len(m) == 0 {
 		return nil
 	}
 	ids := make([]rspec.LinuxIDMapping, 0, len(m))
-	for i, m := range m {
-		ids[i] = rspec.LinuxIDMapping{
+	for _, m := range m {
+		ids = append(ids, rspec.LinuxIDMapping{
 			ContainerID: m.ContainerId,
 			HostID:      m.HostId,
 			Size:        m.Length,
-		}
+		})
 	}
 	return ids
 }
@@ -1166,4 +1202,29 @@ func newLinuxContainerSecurityContext() *types.LinuxContainerSecurityContext {
 		Seccomp:          &types.SecurityProfile{},
 		Apparmor:         &types.SecurityProfile{},
 	}
+}
+
+// isSubDirectoryOf checks if the base path contains the target path.
+// It assumes that paths are Unix-style with forward slashes ("/").
+// It ensures that both paths end with a "/" before comparing, so that "/var/lib" will not incorrectly match "/var/libs".
+
+// The function returns true if the base path starts with the target path, providing a way to check if one directory is a subdirectory of another.
+
+// Examples:
+
+// isSubDirectoryOf("/var/lib/containers/storage", "/") returns true
+// isSubDirectoryOf("/var/lib/containers/storage", "/var/lib") returns true
+// isSubDirectoryOf("/var/lib/containers/storage", "/var/lib/containers") returns true
+// isSubDirectoryOf("/var/lib/containers/storage", "/var/lib/containers/storage") returns true
+// isSubDirectoryOf("/var/lib/containers/storage", "/var/lib/containers/storage/extra") returns false
+// isSubDirectoryOf("/var/lib/containers/storage", "/va") returns false
+// isSubDirectoryOf("/var/lib/containers/storage", "/var/tmp/containers") returns false
+func isSubDirectoryOf(base, target string) bool {
+	if !strings.HasSuffix(target, "/") {
+		target += "/"
+	}
+	if !strings.HasSuffix(base, "/") {
+		base += "/"
+	}
+	return strings.HasPrefix(base, target)
 }

@@ -57,6 +57,11 @@ func (s *Server) ContainerStatus(ctx context.Context, req *types.ContainerStatus
 	}
 	resp.Status.Mounts = mounts
 
+	containerSpec := c.Spec()
+	if containerSpec.Linux != nil {
+		resp.Status.Resources = c.GetResources()
+	}
+
 	cState := c.StateNoLock()
 	rStatus := types.ContainerState_CONTAINER_UNKNOWN
 
@@ -138,7 +143,7 @@ func (s *Server) createContainerInfo(container *oci.Container) (map[string]strin
 	bytes, err := func(metadata *storage.RuntimeContainerMetadata) ([]byte, error) {
 		localContainerInfo := containerInfo{
 			SandboxID:   container.Sandbox(),
-			Pid:         container.State().Pid,
+			Pid:         container.StateNoLock().InitPid,
 			RuntimeSpec: container.Spec(),
 			Privileged:  metadata.Privileged,
 		}

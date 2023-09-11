@@ -36,14 +36,12 @@ function check_oci_annotation() {
 
 @test "ctr not found correct error message" {
 	start_crio
-	! crictl inspect "container_not_exist"
+	run ! crictl inspect "container_not_exist"
 }
 
 @test "ctr termination reason Completed" {
 	start_crio
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_config.json "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
+	ctr_id=$(crictl run "$TESTDATA"/container_config.json "$TESTDATA"/sandbox_config.json)
 	wait_until_exit "$ctr_id"
 
 	output=$(crictl inspect --output yaml "$ctr_id")
@@ -52,12 +50,10 @@ function check_oci_annotation() {
 
 @test "ctr termination reason Error" {
 	start_crio
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
 	jq '	  .command = ["false"]' \
 		"$TESTDATA"/container_config.json > "$newconfig"
-	ctr_id=$(crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json)
+	ctr_id=$(crictl run "$newconfig" "$TESTDATA"/sandbox_config.json)
 
-	crictl start "$ctr_id"
 	EXPECTED_EXIT_STATUS=1 wait_until_exit "$ctr_id"
 
 	output=$(crictl inspect --output yaml "$ctr_id")
@@ -66,28 +62,24 @@ function check_oci_annotation() {
 
 @test "ulimits" {
 	OVERRIDE_OPTIONS="--default-ulimits nofile=42:42 --default-ulimits nproc=1024:2048" start_crio
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
 
 	jq '	  .command = ["/bin/sh", "-c", "sleep 600"]' \
 		"$TESTDATA"/container_config.json > "$newconfig"
-	ctr_id=$(crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
+	ctr_id=$(crictl run "$newconfig" "$TESTDATA"/sandbox_config.json)
 
 	output=$(crictl exec --sync "$ctr_id" sh -c "ulimit -n")
 	[ "$output" == "42" ]
 
-	output=$(crictl exec --sync "$ctr_id" sh -c "ulimit -p")
+	output=$(crictl exec --sync "$ctr_id" sh -c "ulimit -u")
 	[ "$output" == "1024" ]
 
-	output=$(crictl exec --sync "$ctr_id" sh -c "ulimit -Hp")
+	output=$(crictl exec --sync "$ctr_id" sh -c "ulimit -Hu")
 	[ "$output" == "2048" ]
 }
 
 @test "ctr remove" {
 	start_crio
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
+	ctr_id=$(crictl run "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
 	crictl rm -f "$ctr_id"
 }
 
@@ -211,7 +203,7 @@ function check_oci_annotation() {
 	# Create a new container.
 	jq '	  .command = ["invalid"]' \
 		"$TESTDATA"/container_config.json > "$newconfig"
-	! crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
+	run ! crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
 
 	# CRI-O should cleanup the log if the container failed to create
 	for file in "$DEFAULT_LOG_PATH/$pod_id"/*; do
@@ -505,10 +497,8 @@ function check_oci_annotation() {
 	output=$(crictl exec --sync "$ctr_id" echo HELLO)
 	[ "$output" = "HELLO" ]
 
-	run crictl -D exec --sync --timeout 3 "$ctr_id" sleep 5
-	echo "$output"
+	run ! crictl -D exec --sync --timeout 3 "$ctr_id" sleep 5
 	[[ "$output" == *"command "*" timed out"* ]]
-	[ "$status" -ne 0 ]
 }
 
 @test "ctr execsync should not overwrite initial spec args" {
@@ -623,7 +613,7 @@ function check_oci_annotation() {
 		"$TESTDATA"/container_redis.json > "$newconfig"
 
 	# Error is "configured with a device container path that already exists on the host"
-	! crictl create "$pod_id" "$newconfig" "$sandbox_config"
+	run ! crictl create "$pod_id" "$newconfig" "$sandbox_config"
 }
 
 @test "ctr hostname env" {
@@ -640,7 +630,7 @@ function check_oci_annotation() {
 	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
 	crictl start "$ctr_id"
 
-	! crictl exec --sync "$ctr_id" doesnotexist
+	run ! crictl exec --sync "$ctr_id" doesnotexist
 }
 
 @test "ctr execsync exit code" {
@@ -649,7 +639,7 @@ function check_oci_annotation() {
 	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
 	crictl start "$ctr_id"
 
-	! crictl exec --sync "$ctr_id" false
+	run ! crictl exec --sync "$ctr_id" false
 }
 
 @test "ctr execsync std{out,err}" {
@@ -661,14 +651,8 @@ function check_oci_annotation() {
 	output=$(crictl exec --sync "$ctr_id" echo hello0 stdout)
 	[[ "$output" == *"hello0 stdout"* ]]
 
-	jq '	  .image.image = "quay.io/crio/stderr-test"
-		| .command = ["/bin/sleep", "600"]' \
-		"$TESTDATA"/container_config.json > "$newconfig"
-	ctr_id=$(crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
-
-	output=$(crictl exec --sync "$ctr_id" stderr)
-	[[ "$output" == *"this goes to stderr"* ]]
+	output=$(crictl exec --sync "$ctr_id" /bin/sh -c "echo hello0 stderr >&2")
+	[[ "$output" == *"hello0 stderr"* ]]
 }
 
 @test "ctr stop idempotent" {
@@ -731,30 +715,6 @@ function check_oci_annotation() {
 	crictl exec --sync "$ctr_id" grep "CapEff:\s0000000000000000" /proc/1/status
 }
 
-@test "ctr oom" {
-	start_crio
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-
-	jq '	  .image.image = "quay.io/crio/oom"
-		| .linux.resources.memory_limit_in_bytes = 25165824
-		| .command = ["/oom"]' \
-		"$TESTDATA"/container_config.json > "$newconfig"
-	ctr_id=$(crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
-
-	# Wait for container to OOM
-	attempt=0
-	while [ $attempt -le 100 ]; do
-		attempt=$((attempt + 1))
-		output=$(crictl inspect --output yaml "$ctr_id")
-		if [[ "$output" == *"OOMKilled"* ]]; then
-			break
-		fi
-		sleep 10
-	done
-	[[ "$output" == *"OOMKilled"* ]]
-}
-
 @test "ctr /etc/resolv.conf rw/ro mode" {
 	start_crio
 	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
@@ -779,8 +739,7 @@ function check_oci_annotation() {
 
 	jq '	  .command = ["nonexistent"]' \
 		"$TESTDATA"/container_config.json > "$newconfig"
-	run crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
-	[ "$status" -ne 0 ]
+	run ! crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
 	[[ "$output" == *"not found"* ]]
 }
 
@@ -791,8 +750,7 @@ function check_oci_annotation() {
 	jq '	  .command = ["nonexistent"]
 		| .tty = true' \
 		"$TESTDATA"/container_config.json > "$newconfig"
-	run crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
-	[ "$status" -ne 0 ]
+	run ! crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
 	[[ "$output" == *"not found"* ]]
 }
 
@@ -873,8 +831,7 @@ function check_oci_annotation() {
 	jq '	  .working_dir = "/etc/passwd"
 		| .metadata.name = "container2"' \
 		< "$TESTDATA"/container_config.json > "$newconfig"
-	run crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
-	[ "$status" -ne 0 ]
+	run ! crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
 	[[ "$output" == *"not a directory"* ]]
 }
 
@@ -895,9 +852,7 @@ function check_oci_annotation() {
 
 @test "ctr resources" {
 	start_crio
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
+	ctr_id=$(crictl run "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
 
 	output=$(crictl exec --sync "$ctr_id" sh -c "cat /sys/fs/cgroup/cpuset/cpuset.cpus || cat /sys/fs/cgroup/cpuset.cpus")
 	[[ "$output" == *"0"* ]]
@@ -918,7 +873,7 @@ function check_oci_annotation() {
 	crictl exec --sync "$ctr_id" grep "CapEff:\s0000000000000000" /proc/1/status
 }
 
-@test "ctr has gid in supplimental groups" {
+@test "ctr has gid in supplemental groups" {
 	start_crio
 
 	jq '	  .linux.security_context.run_as_user.value = 1000
@@ -936,7 +891,7 @@ function check_oci_annotation() {
 
 	jq '	  .linux.resources.memory_limit_in_bytes = 2000' \
 		"$TESTDATA"/container_config.json > "$newconfig"
-	! crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
+	run ! crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
 }
 
 @test "privileged ctr -- check for rw mounts" {
@@ -976,7 +931,7 @@ function check_oci_annotation() {
 	crictl inspectp "$pod_id" | grep '"security.alpha.kubernetes.io/seccomp/pod": "unconfined"'
 
 	# sandbox annotations passed through to container OCI config
-	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_config.json "$TESTDATA"/sandbox_config.json)
+	ctr_id=$(crictl run "$TESTDATA"/container_config.json "$TESTDATA"/sandbox_config.json)
 	check_oci_annotation "$ctr_id" "com.example.test" "sandbox annotation"
 }
 
@@ -1001,14 +956,12 @@ function check_oci_annotation() {
 	CONTAINER_ABSENT_MOUNT_SOURCES_TO_REJECT="$ABSENT_DIR" start_crio
 
 	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-	! crictl create "$pod_id" "$TESTDIR/config" "$TESTDATA"/sandbox_config.json
+	run ! crictl create "$pod_id" "$TESTDIR/config" "$TESTDATA"/sandbox_config.json
 }
 
 @test "ctr has containerenv" {
 	start_crio
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
+	ctr_id=$(crictl run "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
 
 	crictl exec --sync "$ctr_id" sh -c "stat /run/.containerenv"
 }
@@ -1039,8 +992,7 @@ function check_oci_annotation() {
 	jq '	  .linux.security_context.namespace_options.pid = 2' \
 		"$TESTDATA"/sandbox_config.json > "$newsandbox"
 
-	jq '	  .image.image = "quay.io/crio/redis:alpine"
-		| .linux.security_context.namespace_options.pid = 2
+	jq '	  .linux.security_context.namespace_options.pid = 2
 		| .command = ["/bin/sh", "-c", "sleep 1m& exec sleep 2m"]' \
 		"$TESTDATA"/container_config.json > "$newconfig"
 
@@ -1057,8 +1009,8 @@ function check_oci_annotation() {
 	for process in ${processes}; do
 		# Ignore Z state (zombies) as the process has just been killed and reparented. Systemd will get to it.
 		# `pgrep` doesn't have a good mechanism for ignoring Z state, but including all others, so:
-		# shellcheck disable=SC2009
-		! ps -p "$process" o pid=,stat= | grep -v 'Z'
+		# shellcheck disable=SC2143
+		[ -z "$(ps -p "$process" o pid=,stat= | grep -v ' Z')" ]
 	done
 }
 
@@ -1067,5 +1019,69 @@ function check_oci_annotation() {
 	jq ' .envs = [{"key": "HOME=", "value": "/root:/sbin/nologin\\ntest::0:0::/:/bin/bash"}]' \
 		"$TESTDATA"/container_config.json > "$newconfig"
 
-	! crictl run "$newconfig" "$TESTDATA"/sandbox_config.json
+	run ! crictl run "$newconfig" "$TESTDATA"/sandbox_config.json
+}
+
+@test "ctr log linking" {
+	if [[ $RUNTIME_TYPE == vm ]]; then
+		skip "not applicable to vm runtime type"
+	fi
+	create_runtime_with_allowed_annotation logs io.kubernetes.cri-o.LinkLogs
+	start_crio
+
+	# Create directories created by the kubelet needed for log linking to work
+	pod_uid=$(head -c 32 /proc/sys/kernel/random/uuid)
+	pod_name=$(jq -r '.metadata.name' "$TESTDATA/sandbox_config.json")
+	pod_namespace=$(jq -r '.metadata.namespace' "$TESTDATA/sandbox_config.json")
+	pod_log_dir="/var/log/pods/${pod_namespace}_${pod_name}_${pod_uid}"
+	mkdir -p "$pod_log_dir"
+	pod_empty_dir_volume_path="/var/lib/kubelet/pods/$pod_uid/volumes/kubernetes.io~empty-dir/logging-volume"
+	mkdir -p "$pod_empty_dir_volume_path"
+	ctr_path="/mnt/logging-volume"
+
+	ctr_name=$(jq -r '.metadata.name' "$TESTDATA/container_config.json")
+	ctr_attempt=$(jq -r '.metadata.attempt' "$TESTDATA/container_config.json")
+
+	# Add annotation for log linking in the pod
+	jq --arg pod_log_dir "$pod_log_dir" --arg pod_uid "$pod_uid" '.annotations["io.kubernetes.cri-o.LinkLogs"] = "logging-volume"
+	| .log_directory = $pod_log_dir | .metadata.uid = $pod_uid' \
+		"$TESTDATA/sandbox_config.json" > "$TESTDIR/sandbox_config.json"
+	pod_id=$(crictl runp "$TESTDIR"/sandbox_config.json)
+
+	# Touch the log file
+	mkdir -p "$pod_log_dir/$ctr_name"
+	touch "$pod_log_dir/$ctr_name/$ctr_attempt.log"
+
+	# Create a new container
+	jq --arg host_path "$pod_empty_dir_volume_path" --arg ctr_path "$ctr_path" --arg log_path "$ctr_name/$ctr_attempt.log" \
+		'	  .command = ["sh", "-c", "echo Hello log linking && sleep 1000"]
+		| .log_path = $log_path
+		| .mounts = [ {
+				host_path: $host_path,
+				container_path: $ctr_path
+			} ]' \
+		"$TESTDATA"/container_config.json > "$TESTDIR/container_config.json"
+	ctr_id=$(crictl create "$pod_id" "$TESTDIR/container_config.json" "$TESTDIR/sandbox_config.json")
+
+	# Check that the log is linked
+	ctr_log_path="$pod_log_dir/$ctr_name/$ctr_attempt.log"
+	[ -f "$ctr_log_path" ]
+	mounted_log_path="$pod_empty_dir_volume_path/logs/$ctr_name/$ctr_attempt.log"
+	[ -f "$mounted_log_path" ]
+	linked_log_path="$pod_empty_dir_volume_path/logs/$ctr_id"
+	[ -f "$linked_log_path" ]
+
+	crictl start "$ctr_id"
+
+	# Check expected file contents
+	grep -E "Hello log linking" "$mounted_log_path"
+	grep -E "Hello log linking" "$ctr_log_path"
+	grep -E "Hello log linking" "$linked_log_path"
+
+	crictl exec --sync "$ctr_id" grep -E "Hello log linking" "$ctr_path"/logs/"$ctr_id"
+
+	# Check linked logs were cleaned up
+	crictl rmp -fa
+	[ ! -f "$mounted_log_path" ]
+	[ ! -f "$linked_log_path" ]
 }

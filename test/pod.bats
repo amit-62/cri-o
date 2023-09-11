@@ -159,7 +159,7 @@ function teardown() {
 
 @test "fail to pass pod sysctls to runtime if invalid spaces" {
 	CONTAINER_DEFAULT_SYSCTLS="net.ipv4.ip_forward = 1" crio &
-	! wait_until_reachable
+	run ! wait_until_reachable
 }
 
 @test "fail to pass pod sysctl to runtime if invalid value" {
@@ -173,14 +173,14 @@ function teardown() {
 			"net.ipv4.ip_local_port_range": $sysctl,
 		}' "$TESTDATA"/sandbox_config.json > "$TESTDIR"/sandbox.json
 
-	! crictl runp "$TESTDIR"/sandbox.json
+	run ! crictl runp "$TESTDIR"/sandbox.json
 
 	jq --arg sysctl "net.ipv4.ip_local_port_range=1024 65000'+'net.ipv4.ip_forward" \
 		'.linux.sysctls = {
 			($sysctl): "0",
 		}' "$TESTDATA"/sandbox_config.json > "$TESTDIR"/sandbox.json
 
-	! crictl runp "$TESTDIR"/sandbox.json
+	run ! crictl runp "$TESTDIR"/sandbox.json
 }
 
 @test "skip pod sysctls to runtime if host" {
@@ -259,7 +259,7 @@ function teardown() {
 
 	# kubelet is technically responsible for creating this cgroup. it is created in cri-o if there's an infra container
 	CONTAINER_DROP_INFRA_CTR=false start_crio
-	! crictl runp "$TESTDIR"/sandbox.json
+	run ! crictl runp "$TESTDIR"/sandbox.json
 }
 
 @test "systemd cgroup_parent correctly set" {
@@ -278,22 +278,17 @@ function teardown() {
 }
 
 @test "kubernetes pod terminationGracePeriod passthru" {
-	[ -v CIRCLECI ] && skip "runc v1.0.0-rc11 required" # TODO remove this
-	# Make sure there is no XDG_RUNTIME_DIR set, otherwise the test might end up using the user instance.
 	# There is an assumption in the test to use the system instance of systemd (systemctl show).
-	CONTAINER_CGROUP_MANAGER="systemd" DBUS_SESSION_BUS_ADDRESS="" XDG_RUNTIME_DIR="" start_crio
-
-	# for systemd, cgroup_parent should not be set
-	jq '	  del(.linux.cgroup_parent)' \
-		"$TESTDATA"/sandbox_config.json > "$TESTDIR"/sandbox.json
+	if [[ "$CONTAINER_CGROUP_MANAGER" != "systemd" ]]; then
+		skip "need systemd cgroup manager"
+	fi
+	# Make sure there is no XDG_RUNTIME_DIR set, otherwise the test might end up using the user instance.
+	DBUS_SESSION_BUS_ADDRESS="" XDG_RUNTIME_DIR="" start_crio
 
 	jq '	  .annotations += { "io.kubernetes.pod.terminationGracePeriod": "88" }' \
 		"$TESTDATA"/container_sleep.json > "$TESTDIR"/ctr.json
 
-	pod_id=$(crictl runp "$TESTDIR"/sandbox.json)
-	ctr_id=$(crictl create "$pod_id" "$TESTDIR"/ctr.json "$TESTDIR"/sandbox.json)
-
-	crictl start "$ctr_id"
+	ctr_id=$(crictl run "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
 
 	output=$(systemctl show "crio-${ctr_id}.scope")
 	echo "$output" | grep 'TimeoutStopUSec=' || true      # show
@@ -324,7 +319,7 @@ function teardown() {
 	etc_perm_config="$TESTDIR"/container_sleep.json
 	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
 	jq '	  .metadata.name = "etc-permission"
-	| .image.image = "quay.io/crio/etc-permission"
+	| .image.image = "quay.io/crio/fedora-crio-ci:latest"
 	| .annotations.pod = "etc-permission"
 	| .linux.security_context.run_as_user = {
 		value: 5000

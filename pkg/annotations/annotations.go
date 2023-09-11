@@ -48,8 +48,24 @@ const (
 	// SeccompNotifierActionAnnotation indicates a container is allowed to use the seccomp notifier feature.
 	SeccompNotifierActionAnnotation = "io.kubernetes.cri-o.seccompNotifierAction"
 
+	// UmaskAnnotation is the umask to use in the container init process
+	UmaskAnnotation = "io.kubernetes.cri-o.umask"
+
 	// SeccompNotifierActionStop indicates that a container should be stopped if used via the SeccompNotifierActionAnnotation key.
 	SeccompNotifierActionStop = "stop"
+
+	// PodLinuxOverhead indicates the overheads associated with the pod
+	PodLinuxOverhead = "io.kubernetes.cri-o.PodLinuxOverhead"
+
+	// PodLinuxResources indicates the sum of container resources for this pod
+	PodLinuxResources = "io.kubernetes.cri-o.PodLinuxResources"
+
+	// LinkLogsAnnotations indicates that CRI-O should link the pod containers logs into the specified
+	// emptyDir volume
+	LinkLogsAnnotation = "io.kubernetes.cri-o.LinkLogs"
+
+	// PlatformRuntimePath indicates the runtime path that CRI-O should use for a specific platform.
+	PlatformRuntimePath = "io.kubernetes.cri-o.PlatformRuntimePath"
 )
 
 var AllAllowedAnnotations = []string{
@@ -67,4 +83,8 @@ var AllAllowedAnnotations = []string{
 	CPUCStatesAnnotation,
 	CPUFreqGovernorAnnotation,
 	SeccompNotifierActionAnnotation,
+	UmaskAnnotation,
+	PodLinuxOverhead,
+	PodLinuxResources,
+	LinkLogsAnnotation,
 }

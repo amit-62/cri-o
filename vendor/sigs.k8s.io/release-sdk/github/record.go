@@ -26,7 +26,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/google/go-github/v48/github"
+	"github.com/google/go-github/v53/github"
 	"github.com/sirupsen/logrus"
 )
 
@@ -50,6 +50,7 @@ const (
 	gitHubAPICreateComment              gitHubAPI = "CreateComment"
 	gitHubAPIListMilestones             gitHubAPI = "ListMilestones"
 	gitHubAPIListIssues                 gitHubAPI = "ListIssues"
+	gitHubAPIListComments               gitHubAPI = "ListComments"
 )
 
 type apiRecord struct {
@@ -211,13 +212,13 @@ func (c *githubNotesRecordClient) ListTags(
 }
 
 func (c *githubNotesRecordClient) CreatePullRequest(
-	ctx context.Context, owner, repo, baseBranchName, headBranchName, title, body string,
+	_ context.Context, owner, repo, baseBranchName, headBranchName, title, body string, //nolint: revive
 ) (*github.PullRequest, error) {
 	return &github.PullRequest{}, nil
 }
 
 func (c *githubNotesRecordClient) CreateIssue(
-	ctx context.Context, owner, repo string, req *github.IssueRequest,
+	_ context.Context, owner, repo string, req *github.IssueRequest, //nolint: revive
 ) (*github.Issue, error) {
 	return &github.Issue{}, nil
 }
@@ -254,7 +255,7 @@ func (c *githubNotesRecordClient) ListBranches(
 
 // UpdateReleasePage modifies a release, not recorded
 func (c *githubNotesRecordClient) UpdateReleasePage(
-	ctx context.Context, owner, repo string, releaseID int64, releaseData *github.RepositoryRelease,
+	_ context.Context, owner, repo string, releaseID int64, releaseData *github.RepositoryRelease, //nolint: revive
 ) (*github.RepositoryRelease, error) {
 	return &github.RepositoryRelease{}, nil
 }
@@ -268,7 +269,7 @@ func (c *githubNotesRecordClient) UploadReleaseAsset(
 
 // DeleteReleaseAsset removes an asset from a page, note recorded
 func (c *githubNotesRecordClient) DeleteReleaseAsset(
-	ctx context.Context, owner, repo string, assetID int64,
+	_ context.Context, owner, repo string, assetID int64, //nolint: revive
 ) error {
 	return nil
 }
@@ -323,6 +324,19 @@ func (c *githubNotesRecordClient) ListIssues(
 		return nil, nil, err
 	}
 	return issues, resp, nil
+}
+
+func (c *githubNotesRecordClient) ListComments(
+	ctx context.Context, owner, repo string, number int, opts *github.IssueListCommentsOptions,
+) ([]*github.IssueComment, *github.Response, error) {
+	comments, resp, err := c.client.ListComments(ctx, owner, repo, number, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := c.recordAPICall(gitHubAPIListComments, comments, resp); err != nil {
+		return nil, nil, err
+	}
+	return comments, resp, nil
 }
 
 // recordAPICall records a single GitHub API call into a JSON file by ensuring

@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 
 load helpers
+CRUN_WASM_BINARY=${CRUN_WASM_BINARY:-$(command -v crun-wasm || true)}
 
 IMAGE=quay.io/crio/pause
 SIGNED_IMAGE=registry.access.redhat.com/rhel7-atomic:latest
@@ -32,63 +33,53 @@ function teardown() {
 @test "container status when created by image ID" {
 	start_crio
 
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-
 	jq '.image.image = "'"$REDIS_IMAGEID"'"' \
 		"$TESTDATA"/container_config.json > "$TESTDIR"/ctr.json
-	ctr_id=$(crictl create --no-pull "$pod_id" "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
+	ctr_id=$(crictl run --no-pull "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
 
 	output=$(crictl inspect -o yaml "$ctr_id")
-	[[ "$output" == *"image: quay.io/crio/redis:alpine"* ]]
+	[[ "$output" == *"image: quay.io/crio/fedora-crio-ci:latest"* ]]
 	[[ "$output" == *"imageRef: $REDIS_IMAGEREF"* ]]
 }
 
 @test "container status when created by image tagged reference" {
 	start_crio
 
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-
-	jq '.image.image = "quay.io/crio/redis:alpine"' \
+	jq '.image.image = "quay.io/crio/fedora-crio-ci:latest"' \
 		"$TESTDATA"/container_config.json > "$TESTDIR"/ctr.json
 
-	ctr_id=$(crictl create "$pod_id" "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
+	ctr_id=$(crictl run "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
 
 	output=$(crictl inspect -o yaml "$ctr_id")
-	[[ "$output" == *"image: quay.io/crio/redis:alpine"* ]]
+	[[ "$output" == *"image: quay.io/crio/fedora-crio-ci:latest"* ]]
 	[[ "$output" == *"imageRef: $REDIS_IMAGEREF"* ]]
 }
 
 @test "container status when created by image canonical reference" {
 	start_crio
 
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-
 	jq '.image.image = "'"$REDIS_IMAGEREF"'"' \
 		"$TESTDATA"/container_config.json > "$TESTDIR"/ctr.json
 
-	ctr_id=$(crictl create "$pod_id" "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
+	ctr_id=$(crictl run "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
 
-	crictl start "$ctr_id"
 	output=$(crictl inspect -o yaml "$ctr_id")
-	[[ "$output" == *"image: quay.io/crio/redis:alpine"* ]]
+	[[ "$output" == *"image: quay.io/crio/fedora-crio-ci:latest"* ]]
 	[[ "$output" == *"imageRef: $REDIS_IMAGEREF"* ]]
 }
 
 @test "container status when created by image list canonical reference" {
 	start_crio
 
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
 	crictl pull "$IMAGE_LIST_DIGEST"
 
 	jq '.image.image = "'"$IMAGE_LIST_DIGEST"'"' \
 		"$TESTDATA"/container_config.json > "$TESTDIR"/ctr.json
 
-	ctr_id=$(crictl create "$pod_id" "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
+	ctr_id=$(crictl run "$TESTDIR"/ctr.json "$TESTDATA"/sandbox_config.json)
 
-	crictl start "$ctr_id"
 	output=$(crictl inspect -o yaml "$ctr_id")
 	[[ "$output" == *"image: $IMAGE_LIST_DIGEST"* ]]
-	[[ "$output" == *"imageRef: $IMAGE_LIST_DIGEST"* ]]
 }
 
 @test "image pull and list" {
@@ -301,4 +292,29 @@ function teardown() {
 	[ "$output" = "" ]
 
 	cleanup_images
+}
+
+@test "run container in pod with crun-wasm enabled" {
+	if [ -z "$CRUN_WASM_BINARY" ] || [[ "$RUNTIME_TYPE" == "vm" ]]; then
+		skip "crun-wasm not installed or runtime type is VM"
+	fi
+	cat << EOF > "$CRIO_CONFIG_DIR/99-crun-wasm.conf"
+[crio.runtime]
+default_runtime = "crun-wasm"
+
+[crio.runtime.runtimes.crun-wasm]
+runtime_path = "/usr/bin/crun"
+
+platform_runtime_paths = {"wasi/wasm32" = "/usr/bin/crun-wasm", "abc/def" = "/usr/bin/acme"}
+EOF
+	start_crio
+
+	jq '.metadata.name = "podsandbox-wasm"
+		|.image.image = "quay.io/crio/hello-wasm:latest"
+		| del(.command, .args, .linux.resources)' \
+		"$TESTDATA"/container_config.json > "$TESTDIR/wasm.json"
+
+	ctr_id=$(crictl run "$TESTDIR/wasm.json" "$TESTDATA/sandbox_config.json")
+	output=$(crictl logs "$ctr_id")
+	[[ "$output" == *"Hello, world!"* ]]
 }

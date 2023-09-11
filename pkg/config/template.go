@@ -146,6 +146,11 @@ func initCrioTemplateConfig(c *Config) ([]*templateConfigValue, error) {
 			isDefaultValue: simpleEqual(dc.InternalWipe, c.InternalWipe),
 		},
 		{
+			templateString: templateStringCrioInternalRepair,
+			group:          crioRootConfig,
+			isDefaultValue: simpleEqual(dc.InternalRepair, c.InternalRepair),
+		},
+		{
 			templateString: templateStringCrioCleanShutdownFile,
 			group:          crioRootConfig,
 			isDefaultValue: simpleEqual(dc.CleanShutdownFile, c.CleanShutdownFile),
@@ -456,6 +461,11 @@ func initCrioTemplateConfig(c *Config) ([]*templateConfigValue, error) {
 			isDefaultValue: simpleEqual(dc.HostNetworkDisableSELinux, c.HostNetworkDisableSELinux),
 		},
 		{
+			templateString: templateStringCrioRuntimeDisableHostPortMapping,
+			group:          crioRuntimeConfig,
+			isDefaultValue: simpleEqual(dc.DisableHostPortMapping, c.DisableHostPortMapping),
+		},
+		{
 			templateString: templateStringCrioImageDefaultTransport,
 			group:          crioImageConfig,
 			isDefaultValue: simpleEqual(dc.DefaultTransport, c.DefaultTransport),
@@ -481,9 +491,19 @@ func initCrioTemplateConfig(c *Config) ([]*templateConfigValue, error) {
 			isDefaultValue: simpleEqual(dc.PauseCommand, c.PauseCommand),
 		},
 		{
+			templateString: templateStringCrioImagePinnedImages,
+			group:          crioImageConfig,
+			isDefaultValue: stringSliceEqual(dc.PinnedImages, c.PinnedImages),
+		},
+		{
 			templateString: templateStringCrioImageSignaturePolicy,
 			group:          crioImageConfig,
 			isDefaultValue: simpleEqual(dc.SignaturePolicyPath, c.SignaturePolicyPath),
+		},
+		{
+			templateString: templateStringCrioImageSignaturePolicyDir,
+			group:          crioImageConfig,
+			isDefaultValue: simpleEqual(dc.SignaturePolicyDir, c.SignaturePolicyDir),
 		},
 		{
 			templateString: templateStringCrioImageInsecureRegistries,
@@ -749,6 +769,12 @@ const templateStringCrioInternalWipe = `# InternalWipe is whether CRI-O should w
 
 `
 
+const templateStringCrioInternalRepair = `# InternalRepair is whether CRI-O should check if the container and image storage was corrupted after a sudden restart.
+# If it was, CRI-O also attempts to repair the storage.
+{{ $.Comment }}internal_repair = {{ .InternalRepair }}
+
+`
+
 const templateStringCrioAPI = `# The crio.api table contains settings for the kubelet/gRPC interface.
 [crio.api]
 
@@ -800,12 +826,12 @@ const templateStringCrioAPIStreamTLSCa = `# Path to the x509 CA(s) file used to 
 
 `
 
-const templateStringCrioAPIGrpcMaxSendMsgSize = `# Maximum grpc send message size in bytes. If not set or <=0, then CRI-O will default to 16 * 1024 * 1024.
+const templateStringCrioAPIGrpcMaxSendMsgSize = `# Maximum grpc send message size in bytes. If not set or <=0, then CRI-O will default to 80 * 1024 * 1024.
 {{ $.Comment }}grpc_max_send_msg_size = {{ .GRPCMaxSendMsgSize }}
 
 `
 
-const templateStringCrioAPIGrpcMaxRecvMsgSize = `# Maximum grpc receive message size. If not set or <= 0, then CRI-O will default to 16 * 1024 * 1024.
+const templateStringCrioAPIGrpcMaxRecvMsgSize = `# Maximum grpc receive message size. If not set or <= 0, then CRI-O will default to 80 * 1024 * 1024.
 {{ $.Comment }}grpc_max_recv_msg_size = {{ .GRPCMaxRecvMsgSize }}
 
 `
@@ -881,6 +907,8 @@ const templateStringCrioRuntimeSeccompUseDefaultWhenEmpty = `# Changes the meani
 # (and according to CRI spec), an empty profile means unconfined.
 # This option tells CRI-O to treat an empty profile as the default profile,
 # which might increase security.
+# This option is currently deprecated,
+# and will be replaced by the SeccompDefault FeatureGate in Kubernetes.
 {{ $.Comment }}seccomp_use_default_when_empty = {{ .SeccompUseDefaultWhenEmpty }}
 
 `
@@ -1010,7 +1038,7 @@ const templateStringCrioRuntimeLogSizeMax = `# Maximum sized allowed for the con
 
 `
 
-const templateStringCrioRuntimeLogToJournald = `# Whether container output should be logged to journald in addition to the kuberentes log file
+const templateStringCrioRuntimeLogToJournald = `# Whether container output should be logged to journald in addition to the kubernetes log file
 {{ $.Comment }}log_to_journald = {{ .LogToJournald }}
 
 `
@@ -1137,7 +1165,7 @@ const templateStringCrioRuntimeDefaultRuntime = `# default_runtime is the _name_
 
 const templateStringCrioRuntimeAbsentMountSourcesToReject = `# A list of paths that, when absent from the host,
 # will cause a container creation to fail (as opposed to the current behavior being created as a directory).
-# This option is to protect from source locations whose existence as a directory could jepordize the health of the node, and whose
+# This option is to protect from source locations whose existence as a directory could jeopardize the health of the node, and whose
 # creation as a file is not desired either.
 # An example is /etc/hostname, which will cause failures on reboot if it's created as a directory, but often doesn't exist because
 # the hostname is being managed dynamically.
@@ -1161,6 +1189,7 @@ const templateStringCrioRuntimeRuntimesRuntimeHandler = `# The "crio.runtime.run
 # monitor_env = []
 # privileged_without_host_devices = false
 # allowed_annotations = []
+# platform_runtime_paths = { "os/arch" = "/path/to/binary" }
 # Where:
 # - runtime-handler: Name used to identify the runtime.
 # - runtime_path (optional, string): Absolute path to the runtime executable in
@@ -1193,6 +1222,8 @@ const templateStringCrioRuntimeRuntimesRuntimeHandler = `# The "crio.runtime.run
 #   should be moved to the container's cgroup
 # - monitor_env (optional, array of strings): Environment variables to pass to the montior.
 #   Replaces deprecated option "conmon_env".
+# - platform_runtime_paths (optional, map): A mapping of platforms to the corresponding
+#   runtime executable paths for the runtime handler.
 #
 # Using the seccomp notifier feature:
 #
@@ -1235,6 +1266,10 @@ const templateStringCrioRuntimeRuntimesRuntimeHandler = `# The "crio.runtime.run
 {{ if $runtime_handler.AllowedAnnotations }}{{ $.Comment }}allowed_annotations = [
 {{ range $opt := $runtime_handler.AllowedAnnotations }}{{ $.Comment }}{{ printf "\t%q,\n" $opt }}{{ end }}{{ $.Comment }}]{{ end }}
 {{ $.Comment }}privileged_without_host_devices = {{ $runtime_handler.PrivilegedWithoutHostDevices }}
+{{ if $runtime_handler.PlatformRuntimePaths }}platform_runtime_paths = {
+{{- $first := true }}{{- range $key, $value := $runtime_handler.PlatformRuntimePaths }}
+{{- if not $first }},{{ end }}{{- printf "%q = %q" $key $value }}{{- $first = false }}{{- end }}}
+{{ end }}
 {{ end }}
 `
 
@@ -1276,6 +1311,13 @@ const templateStringCrioRuntimeHostNetworkDisableSELinux = `# hostnetwork_disabl
 # SELinux should be disabled within a pod when it is running in the host network namespace
 # Default value is set to true
 {{ $.Comment }}hostnetwork_disable_selinux = {{ .HostNetworkDisableSELinux }}
+
+`
+
+const templateStringCrioRuntimeDisableHostPortMapping = `# disable_hostport_mapping determines whether to enable/disable
+# the container hostport mapping in CRI-O.
+# Default value is set to 'false'
+{{ $.Comment }}disable_hostport_mapping = {{ .DisableHostPortMapping }}
 
 `
 
@@ -1322,12 +1364,32 @@ const templateStringCrioImagePauseCommand = `# The command to run to have a cont
 
 `
 
+const templateStringCrioImagePinnedImages = `# List of images to be excluded from the kubelet's garbage collection.
+# It allows specifying image names using either exact, glob, or keyword
+# patterns. Exact matches must match the entire name, glob matches can
+# have a wildcard * at the end, and keyword matches can have wildcards
+# on both ends. By default, this list includes the "pause" image if
+# configured by the user, which is used as a placeholder in Kubernetes pods.
+{{ $.Comment }}pinned_images = [
+{{ range $opt := .PinnedImages }}{{ $.Comment }}{{ printf "\t%q,\n" $opt }}{{ end }}{{ $.Comment }}]
+
+`
+
 const templateStringCrioImageSignaturePolicy = `# Path to the file which decides what sort of policy we use when deciding
 # whether or not to trust an image that we've pulled. It is not recommended that
 # this option be used, as the default behavior of using the system-wide default
 # policy (i.e., /etc/containers/policy.json) is most often preferred. Please
 # refer to containers-policy.json(5) for more details.
 {{ $.Comment }}signature_policy = "{{ .SignaturePolicyPath }}"
+
+`
+
+const templateStringCrioImageSignaturePolicyDir = `# Root path for pod namespace-separated signature policies.
+# The final policy to be used on image pull will be <SIGNATURE_POLICY_DIR>/<NAMESPACE>.json.
+# If no pod namespace is being provided on image pull (via the sandbox config),
+# or the concatenated path is non existent, then the signature_policy or system
+# wide policy will be used as fallback. Must be an absolute path.
+{{ $.Comment }}signature_policy_dir = "{{ .SignaturePolicyDir }}"
 
 `
 

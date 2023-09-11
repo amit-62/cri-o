@@ -24,8 +24,8 @@ var _ = t.Describe("ContainerCheckpoint", func() {
 		beforeEach()
 		createDummyConfig()
 		mockRuncInLibConfig()
-		if !criu.CheckForCriu(criu.PodCriuVersion) {
-			Skip("CRIU is missing or too old.")
+		if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+			Skip("Check CRIU: " + err.Error())
 		}
 	})
 
@@ -110,7 +110,7 @@ var _ = t.Describe("ContainerCheckpoint", func() {
 
 			// Then
 			Expect(err).ToNot(BeNil())
-			Expect(err.Error()).To(ContainSubstring(`failed to checkpoint container containerID`))
+			Expect(err.Error()).To(ContainSubstring(`failed to pause container "containerID" before checkpointing`))
 		})
 	})
 	t.Describe("ContainerCheckpoint", func() {

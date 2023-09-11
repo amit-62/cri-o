@@ -40,8 +40,7 @@ import (
 	"github.com/cri-o/ocicni/pkg/ocicni"
 	selinux "github.com/opencontainers/selinux/go-selinux"
 	"github.com/sirupsen/logrus"
-
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+	"k8s.io/utils/cpuset"
 )
 
 // Defaults if none are specified
@@ -103,7 +102,7 @@ const (
 	// ImageVolumesBind option is for using bind mounted volumes
 	ImageVolumesBind ImageVolumesType = "bind"
 	// DefaultPauseImage is default pause image
-	DefaultPauseImage string = "registry.k8s.io/pause:3.6"
+	DefaultPauseImage string = "registry.k8s.io/pause:3.9"
 )
 
 const (
@@ -169,6 +168,9 @@ type RootConfig struct {
 	// If set to false, one must use the external command `crio wipe` to wipe the containers and images in these situations.
 	// The option InternalWipe is deprecated, and will be removed in a future release.
 	InternalWipe bool `toml:"internal_wipe"`
+
+	// InternalRepair is used to repair the affected images.
+	InternalRepair bool `toml:"internal_repair"`
 }
 
 // GetStore returns the container storage for a given configuration
@@ -199,6 +201,7 @@ type RuntimeHandler struct {
 	// "io.kubernetes.cri-o.ShmSize" for configuring the size of /dev/shm.
 	// "io.kubernetes.cri-o.UnifiedCgroup.$CTR_NAME" for configuring the cgroup v2 unified block for a container.
 	// "io.containers.trace-syscall" for tracing syscalls via the OCI seccomp BPF hook.
+	// "io.kubernetes.cri-o.LinkLogs" for linking logs into the pod.
 	AllowedAnnotations []string `toml:"allowed_annotations,omitempty"`
 
 	// DisallowedAnnotations is the slice of experimental annotations that are not allowed for this handler.
@@ -213,6 +216,10 @@ type RuntimeHandler struct {
 
 	// MonitorExecCgroup indicates whether to move exec probes to the container's cgroup.
 	MonitorExecCgroup string `toml:"monitor_exec_cgroup,omitempty"`
+
+	// PlatformRuntimePaths defines a configuration option that specifies
+	// the runtime paths for different platforms.
+	PlatformRuntimePaths map[string]string `toml:"platform_runtime_paths,omitempty"`
 }
 
 // Multiple runtime Handlers in a map
@@ -222,6 +229,7 @@ type Runtimes map[string]*RuntimeHandler
 type RuntimeConfig struct {
 	// SeccompUseDefaultWhenEmpty specifies whether the default profile
 	// should be used when an empty one is specified.
+	// This option is currently deprecated, and will be replaced by the SeccompDefault FeatureGate in Kubernetes.
 	SeccompUseDefaultWhenEmpty bool `toml:"seccomp_use_default_when_empty"`
 
 	// NoPivot instructs the runtime to not use `pivot_root`, but instead use `MS_MOVE`
@@ -447,6 +455,10 @@ type RuntimeConfig struct {
 	// when it is running in the host network namespace
 	// https://github.com/cri-o/cri-o/issues/5501
 	HostNetworkDisableSELinux bool `toml:"hostnetwork_disable_selinux"`
+
+	// Option to disable hostport mapping in CRI-O
+	// Default value is 'false'
+	DisableHostPortMapping bool `toml:"disable_hostport_mapping"`
 }
 
 // ImageConfig represents the "crio.image" TOML config table.
@@ -468,12 +480,25 @@ type ImageConfig struct {
 	// PauseCommand is the path of the binary we run in an infra
 	// container that's been instantiated using PauseImage.
 	PauseCommand string `toml:"pause_command"`
+	// PinnedImages is a list of container images that should be pinned
+	// and not subject to garbage collection by kubelet.
+	// Pinned images will remain in the container runtime's storage until
+	// they are manually removed. Default value: empty list (no images pinned)
+	PinnedImages []string `toml:"pinned_images"`
 	// SignaturePolicyPath is the name of the file which decides what sort
 	// of policy we use when deciding whether or not to trust an image that
 	// we've pulled.  Outside of testing situations, it is strongly advised
 	// that this be left unspecified so that the default system-wide policy
 	// will be used.
 	SignaturePolicyPath string `toml:"signature_policy"`
+	// SignaturePolicyDir is the root path for pod namespace-separated
+	// signature policies. The final policy to be used on image pull will be
+	// <SIGNATURE_POLICY_DIR>/<NAMESPACE>.json.
+	// If no pod namespace is being provided on image pull (via the sandbox
+	// config), or the concatenated path is non existent, then the
+	// SignaturePolicyPath or system wide policy will be used as fallback.
+	// Must be an absolute path.
+	SignaturePolicyDir string `toml:"signature_policy_dir"`
 	// InsecureRegistries is a list of registries that must be contacted w/o
 	// TLS verification.
 	InsecureRegistries []string `toml:"insecure_registries"`
@@ -788,6 +813,7 @@ func DefaultConfig() (*Config, error) {
 			VersionFile:       CrioVersionPathTmp,
 			CleanShutdownFile: CrioCleanShutdownFile,
 			InternalWipe:      true,
+			InternalRepair:    false,
 		},
 		APIConfig: APIConfig{
 			Listen:             CrioSocketPath,
@@ -833,12 +859,14 @@ func DefaultConfig() (*Config, error) {
 			rdtConfig:                   rdt.New(),
 			ulimitsConfig:               ulimits.New(),
 			HostNetworkDisableSELinux:   true,
+			DisableHostPortMapping:      false,
 		},
 		ImageConfig: ImageConfig{
-			DefaultTransport: "docker://",
-			PauseImage:       DefaultPauseImage,
-			PauseCommand:     "/pause",
-			ImageVolumes:     ImageVolumesMkdir,
+			DefaultTransport:   "docker://",
+			PauseImage:         DefaultPauseImage,
+			PauseCommand:       "/pause",
+			ImageVolumes:       ImageVolumesMkdir,
+			SignaturePolicyDir: "/etc/crio/policies",
 		},
 		NetworkConfig: NetworkConfig{
 			NetworkDir: cniConfigDir,
@@ -887,6 +915,10 @@ func (c *Config) Validate(onExecution bool) error {
 	c.RuntimeConfig.seccompConfig.SetNotifierPath(
 		filepath.Join(filepath.Dir(c.Listen), "seccomp"),
 	)
+
+	if err := c.ImageConfig.Validate(onExecution); err != nil {
+		return fmt.Errorf("validating image config: %w", err)
+	}
 
 	if err := c.NetworkConfig.Validate(onExecution); err != nil {
 		return fmt.Errorf("validating network config: %w", err)
@@ -1329,6 +1361,20 @@ func validateExecutablePath(executable, currentPath string) (string, error) {
 	}
 	logrus.Infof("Using %s executable: %s", executable, currentPath)
 	return currentPath, nil
+}
+
+// Validate is the main entry point for image configuration validation.
+// It returns an error on validation failure, otherwise nil.
+func (c *ImageConfig) Validate(onExecution bool) error {
+	if !filepath.IsAbs(c.SignaturePolicyDir) {
+		return fmt.Errorf("signature policy dir %q is not absolute", c.SignaturePolicyDir)
+	}
+	if onExecution {
+		if err := os.MkdirAll(c.SignaturePolicyDir, 0o755); err != nil {
+			return fmt.Errorf("cannot create signature policy dir: %w", err)
+		}
+	}
+	return nil
 }
 
 // Validate is the main entry point for network configuration validation.

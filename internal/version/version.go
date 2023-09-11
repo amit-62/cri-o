@@ -20,7 +20,7 @@ import (
 )
 
 // Version is the version of the build.
-const Version = "1.26.0"
+const Version = "1.27.0"
 
 // Variables injected during build-time
 var (
@@ -228,7 +228,7 @@ func (i *Info) String() string {
 			valueString = value.String()
 		}
 
-		if valueString != "" {
+		if strings.TrimSpace(valueString) != "" {
 			fmt.Fprintf(w, "%s:\t%s", field.Name, valueString)
 			if i+1 < t.NumField() {
 				fmt.Fprintf(w, "\n")

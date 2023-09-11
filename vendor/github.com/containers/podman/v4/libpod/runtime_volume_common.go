@@ -20,6 +20,7 @@ import (
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/containers/storage/pkg/stringid"
 	pluginapi "github.com/docker/go-plugins-helpers/volume"
+	"github.com/opencontainers/selinux/go-selinux"
 	"github.com/sirupsen/logrus"
 )
 
@@ -77,7 +78,7 @@ func (r *Runtime) newVolume(ctx context.Context, noCreatePluginVolume bool, opti
 		for key, val := range volume.config.Options {
 			switch strings.ToLower(key) {
 			case "device":
-				if strings.ToLower(volume.config.Options["type"]) == "bind" {
+				if strings.ToLower(volume.config.Options["type"]) == define.TypeBind {
 					if _, err := os.Stat(val); err != nil {
 						return nil, fmt.Errorf("invalid volume option %s for driver 'local': %w", key, err)
 					}
@@ -120,7 +121,14 @@ func (r *Runtime) newVolume(ctx context.Context, noCreatePluginVolume bool, opti
 
 		// Create a backing container in c/storage.
 		storageConfig := storage.ContainerOptions{
-			LabelOpts: []string{"filetype:container_file_t:s0"},
+			LabelOpts: []string{"filetype:container_file_t", "level:s0"},
+		}
+		if len(volume.config.MountLabel) > 0 {
+			context, err := selinux.NewContext(volume.config.MountLabel)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get SELinux context from %s: %w", volume.config.MountLabel, err)
+			}
+			storageConfig.LabelOpts = []string{fmt.Sprintf("filetype:%s", context["type"])}
 		}
 		if _, err := r.storageService.CreateContainerStorage(ctx, r.imageContext, imgString, image.ID(), volume.config.StorageName, volume.config.StorageID, storageConfig); err != nil {
 			return nil, fmt.Errorf("creating backing storage for image driver: %w", err)
@@ -161,7 +169,7 @@ func (r *Runtime) newVolume(ctx context.Context, noCreatePluginVolume bool, opti
 		if err := idtools.SafeChown(fullVolPath, volume.config.UID, volume.config.GID); err != nil {
 			return nil, fmt.Errorf("chowning volume directory %q to %d:%d: %w", fullVolPath, volume.config.UID, volume.config.GID, err)
 		}
-		if err := LabelVolumePath(fullVolPath); err != nil {
+		if err := LabelVolumePath(fullVolPath, volume.config.MountLabel); err != nil {
 			return nil, err
 		}
 		if volume.config.DisableQuota {
@@ -380,7 +388,11 @@ func (r *Runtime) removeVolume(ctx context.Context, v *Volume, force bool, timeo
 
 			logrus.Debugf("Removing container %s (depends on volume %q)", ctr.ID(), v.Name())
 
-			if err := r.removeContainer(ctx, ctr, force, false, false, false, timeout); err != nil {
+			opts := ctrRmOpts{
+				Force:   force,
+				Timeout: timeout,
+			}
+			if _, _, err := r.removeContainer(ctx, ctr, opts); err != nil {
 				return fmt.Errorf("removing container %s that depends on volume %s: %w", ctr.ID(), v.Name(), err)
 			}
 		}

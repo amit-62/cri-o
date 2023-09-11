@@ -16,11 +16,9 @@
 
 - name: clone build and install runc
   include: "build/runc.yml"
-  when: "build_runc | bool"
 
 - name: clone build and install crun
   include: "build/crun.yml"
-  when: "build_crun | default(False) | bool"
 
 - name: install Kata Containers
   include: "build/kata.yml"
@@ -46,13 +44,10 @@
     k8s_github_fork: "kubernetes"
     crio_socket: "/run/crio/crio.sock"
 
-- name: clone build and install kubetest                                                                     
-  include: "build/kubetest.yml"                                                                              
-  vars:                                                                                                      
-    force_clone: true  
-
-- name: clone and build crio 
-  include: build/cri-o.yml
+- name: clone build and install kubetest
+  include: "build/kubetest.yml"
+  vars:
+    force_clone: true
 
 - name: Ensures crio conf dir exists
   file: path=/etc/crio/crio.conf.d state=directory
@@ -79,5 +74,5 @@
       [crio.image]
       registries = [ "quay.io", "docker.io" ]
 
-- name: build parallel 
+- name: build parallel
   include: "build/parallel.yml"

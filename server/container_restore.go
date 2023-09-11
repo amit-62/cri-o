@@ -18,14 +18,14 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
-	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
+	kubetypes "k8s.io/kubelet/pkg/types"
 )
 
 func (s *Server) checkIfCheckpointOCIImage(ctx context.Context, input string) (bool, error) {
 	if _, err := os.Stat(input); err == nil {
 		return false, nil
 	}
-	imageStatusRespone, err := s.ImageStatus(
+	imageStatusResponse, err := s.ImageStatus(
 		ctx,
 		&types.ImageStatusRequest{
 			Image: &types.ImageSpec{
@@ -37,14 +37,14 @@ func (s *Server) checkIfCheckpointOCIImage(ctx context.Context, input string) (b
 		return false, err
 	}
 
-	if imageStatusRespone == nil ||
-		imageStatusRespone.Image == nil ||
-		imageStatusRespone.Image.Spec == nil ||
-		imageStatusRespone.Image.Spec.Annotations == nil {
+	if imageStatusResponse == nil ||
+		imageStatusResponse.Image == nil ||
+		imageStatusResponse.Image.Spec == nil ||
+		imageStatusResponse.Image.Spec.Annotations == nil {
 		return false, nil
 	}
 
-	ann, ok := imageStatusRespone.Image.Spec.Annotations[crioann.CheckpointAnnotationName]
+	ann, ok := imageStatusResponse.Image.Spec.Annotations[crioann.CheckpointAnnotationName]
 	if !ok {
 		return false, nil
 	}
@@ -65,6 +65,7 @@ func (s *Server) CRImportCheckpoint(
 	input := createConfig.Image.Image
 	createMounts := createConfig.Mounts
 	createAnnotations := createConfig.Annotations
+	createLabels := createConfig.Labels
 
 	checkpointIsOCIImage, err := s.checkIfCheckpointOCIImage(ctx, input)
 	if err != nil {
@@ -162,7 +163,9 @@ func (s *Server) CRImportCheckpoint(
 		if err := json.Unmarshal([]byte(dumpSpec.Annotations[annotations.Metadata]), &ctrMetadata); err != nil {
 			return "", fmt.Errorf("failed to read %q: %w", annotations.Metadata, err)
 		}
-
+		if createConfig.Metadata != nil && createConfig.Metadata.Name != "" {
+			ctrMetadata.Name = createConfig.Metadata.Name
+		}
 		if err := json.Unmarshal([]byte(dumpSpec.Annotations[annotations.Annotations]), &originalAnnotations); err != nil {
 			return "", fmt.Errorf("failed to read %q: %w", annotations.Annotations, err)
 		}
@@ -176,6 +179,30 @@ func (s *Server) CRImportCheckpoint(
 			}
 			if _, ok := originalAnnotations[kubetypes.KubernetesPodUIDLabel]; ok {
 				originalAnnotations[kubetypes.KubernetesPodUIDLabel] = sandboxUID
+			}
+		}
+
+		if createLabels != nil {
+			fixupLabels := []string{
+				// Update the container name. It has already been update in metadata.Name.
+				// It also needs to be updated in the container labels.
+				kubetypes.KubernetesContainerNameLabel,
+				// Update pod name in the labels.
+				kubetypes.KubernetesPodNameLabel,
+				// Also update namespace.
+				kubetypes.KubernetesPodNamespaceLabel,
+			}
+
+			for _, annotation := range fixupLabels {
+				_, ok1 := createLabels[annotation]
+				_, ok2 := originalLabels[annotation]
+
+				// If the value is not set in the original container or
+				// if it is not set in the new container, just skip
+				// the step of updating metadata.
+				if ok1 && ok2 {
+					originalLabels[annotation] = createLabels[annotation]
+				}
 			}
 		}
 
@@ -215,7 +242,27 @@ func (s *Server) CRImportCheckpoint(
 			Name:    ctrMetadata.Name,
 			Attempt: ctrMetadata.Attempt,
 		},
-		Image: &types.ImageSpec{Image: config.RootfsImageName},
+		Image: &types.ImageSpec{
+			Image: func() string {
+				if config.RootfsImageRef != "" {
+					// Newer checkpoints archives have RootfsImageRef set
+					// and using it for the restore is more correct.
+					// For the Kubernetes use case the output of 'crictl ps'
+					// contains for the original container under 'IMAGE' something
+					// like 'registry/path/container@sha256:123444444...'.
+					// The restored container was, however, only displaying something
+					// like 'registry/path/container'.
+					// This had two problems, first, the output from the restored
+					// container was different, but the bigger problem was, that
+					// CRI-O might pull the wrong image from the registry.
+					// If the container in the registry was updated (new latest tag)
+					// all of a sudden the wrong base image would be downloaded.
+					return config.RootfsImageRef
+				}
+				// For an older checkpoint archive, let's fallback to the old behavior.
+				return config.RootfsImageName
+			}(),
+		},
 		Linux: &types.LinuxContainerConfig{
 			Resources:       &types.LinuxContainerResources{},
 			SecurityContext: &types.LinuxContainerSecurityContext{},

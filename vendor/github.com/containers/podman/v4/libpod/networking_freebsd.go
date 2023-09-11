@@ -98,14 +98,14 @@ func (r *RootlessNetNS) Cleanup(runtime *Runtime) error {
 }
 
 // GetRootlessNetNs returns the rootless netns object. If create is set to true
-// the rootless network namespace will be created if it does not exists already.
+// the rootless network namespace will be created if it does not already exist.
 // If called as root it returns always nil.
 // On success the returned RootlessCNI lock is locked and must be unlocked by the caller.
 func (r *Runtime) GetRootlessNetNs(new bool) (*RootlessNetNS, error) {
 	return nil, nil
 }
 
-func GetSlirp4netnsIP(subnet *net.IPNet) (*net.IP, error) {
+func getSlirp4netnsIP(subnet *net.IPNet) (*net.IP, error) {
 	return nil, errors.New("not implemented GetSlirp4netnsIP")
 }
 
@@ -270,4 +270,8 @@ func (c *Container) reloadRootlessRLKPortMapping() error {
 
 func (c *Container) setupRootlessNetwork() error {
 	return nil
+}
+
+func getPastaIP(state *ContainerState) (net.IP, error) {
+	return nil, fmt.Errorf("pasta networking is Linux only")
 }

@@ -204,7 +204,7 @@ function exec_cmd() {
 function welcome_msg() {
     ##################################################################
     # Description:                                                   #
-    #   Tradicional welcome message                                  #
+    #   Traditional welcome message                                  #
     ##################################################################
 
     print_msg "WARN" "DO NOT USE IN PRODUCTION ENVIRONMENT!"
@@ -1096,7 +1096,7 @@ function install_required_packages_runtime_crio() {
         print_msg "DEBUG" "Downloading ${MD2MAN_GITHUB_URL}..."
         exec_cmd "${GOLANG_BIN} get ${MD2MAN_GITHUB_URL}"
     else
-        print_msg "DEBUG" "Detected ${MD2MAN_NAME}... Skiping: ${GOLANG_BIN} get ${MD2MAN_GITHUB_URL}"
+        print_msg "DEBUG" "Detected ${MD2MAN_NAME}... Skipping: ${GOLANG_BIN} get ${MD2MAN_GITHUB_URL}"
     fi
 
     exec_cmd "SUDO" "${DISTRO_CMD_TOOL} install ${packages} ${AUTO_INSTALL_PACKAGES}"
@@ -1194,11 +1194,10 @@ function kubectl_retry() {
         if [[ ${tries} -le 0 ]]; then
             print_msg "FAIL" "kubectl [${cmd}] exceed the maximum number of attempts [${KUBECTL_ATTEMPTS}]! Exiting..."
             cleanup
-            exit 1
         fi
 
         sec="${KUBECTL_WAIT_SEC_FOR_NEXT_CMD}"
-        print_msg "INFO_NEWLINE" "kubectl failed, cluster might not be ready! A next attept will happen in ${sec}..."
+        print_msg "INFO_NEWLINE" "kubectl failed, cluster might not be ready! A next attempt will happen in ${sec}..."
         ${SLEEP_BIN} "${sec}"
 
     done
@@ -1299,7 +1298,6 @@ ${CONTAINER_ORCHESTRATION_NAME} [${CONTAINER_ORCHESTRATION_VERSION}]. The build 
             print_msg "OK" "Output generated: ${OUTPUT_FILENAME}"
         fi
         cleanup
-        exit 0
     fi
 
     print_msg "OK" "Cluster ready to go!"
@@ -1364,7 +1362,7 @@ function kubectl_exec() {
 
     cmd=$(${KUBECTL_SCRIPT})
 
-    # Check if output file was specificed
+    # Check if output file was specified
     if [ -n "${OUTPUT_FILENAME}" ]; then
         print_msg "DEBUG" "Executing the command [${KUBECTL_SCRIPT}] sending output to ${OUTPUT_FILENAME}"
         attach_environment_info_to_file "${OUTPUT_FILENAME}"
@@ -1523,7 +1521,6 @@ else
             load_profile
             detect_system
             cleanup
-            exit 0
             ;;
         *)
             break

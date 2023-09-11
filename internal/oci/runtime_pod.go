@@ -16,6 +16,7 @@ import (
 	"github.com/cri-o/cri-o/internal/log"
 	"github.com/cri-o/cri-o/internal/opentelemetry"
 	"github.com/cri-o/cri-o/pkg/config"
+	"github.com/cri-o/cri-o/utils"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
@@ -247,16 +248,13 @@ func (r *runtimePod) SignalContainer(ctx context.Context, c *Container, sig sysc
 func (r *runtimePod) AttachContainer(ctx context.Context, c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resizeChan <-chan remotecommand.TerminalSize) error {
 	attachSocketPath := filepath.Join(r.serverDir, c.ID(), "attach")
 	libpodResize := make(chan resize.TerminalSize, 1)
-	go func() {
-		var event remotecommand.TerminalSize
-		var libpodEvent resize.TerminalSize
 
-		for event = range resizeChan {
-			libpodEvent.Height = event.Height
-			libpodEvent.Width = event.Width
-			libpodResize <- libpodEvent
-		}
-	}()
+	utils.HandleResizing(resizeChan, func(size remotecommand.TerminalSize) {
+		var libpodEvent resize.TerminalSize
+		libpodEvent.Height = size.Height
+		libpodEvent.Width = size.Width
+		libpodResize <- libpodEvent
+	})
 
 	var (
 		stdin          *conmonClient.In

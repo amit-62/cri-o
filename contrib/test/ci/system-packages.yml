@@ -52,18 +52,6 @@
       - tar
       - wget
 
-- name: Install optional packages For RedHat
-  become: yes
-  yum:
-    state: present
-    enablerepo: codeready-builder-for-rhel-9-x86_64-rpms
-    name:
-      - glibc-static
-      - gpgme-devel
-      - yajl-devel
-      - libsemanage-devel
-  when: ansible_distribution == 'RedHat'
-
 - name: Install optional packages For CentOS Stream 9
   become: yes
   yum:
@@ -104,6 +92,8 @@
       - btrfs-progs-devel
       - gpgme-devel
       - glibc-static
+      # required to test the crun-wasm workflow.
+      - crun-wasm
   when: ansible_distribution in ['Fedora']
 
 - name: Add python-boto for RHEL and CentOS
@@ -125,6 +115,6 @@
 - name: Update all packages RHEL 8, CentOS 8 and Fedora >= 30
   shell: sudo yum update -y
   when:
-    - supports_python3 is defined 
+    - supports_python3 is defined
     - supports_python3
     - (ansible_distribution in ['RedHat', 'CentOS', 'Fedora']  and ansible_distribution_major_version|int != 9)

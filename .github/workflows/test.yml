@@ -8,23 +8,16 @@ on:
       - release-*
   pull_request:
 env:
-  GO_VERSION: '1.20'
-  NIX_VERSION: '2.13.3'
+  GO_VERSION: '1.21'
+  NIX_VERSION: '2.15.1'
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/checkout@v3
-      - uses: actions/cache@v3
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-build-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-build-
       - run: scripts/github-actions-packages
       - run: make
       - run: bin/crio version
@@ -52,7 +45,7 @@ jobs:
   build-386:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/cache@v3
         with:
           path: |
@@ -86,7 +79,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v3
         with:
           name: build
@@ -100,7 +93,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v3
         with:
           name: build
@@ -114,7 +107,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v3
         with:
           name: build
@@ -125,8 +118,8 @@ jobs:
   build-static-amd64:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: cachix/install-nix-action@v20
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v23
         with:
           install_url: https://releases.nixos.org/nix/nix-${{ env.NIX_VERSION }}/install
       - uses: cachix/cachix-action@v12
@@ -147,8 +140,8 @@ jobs:
   build-static-arm64:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: cachix/install-nix-action@v20
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v23
         with:
           install_url: https://releases.nixos.org/nix/nix-${{ env.NIX_VERSION }}/install
       - uses: cachix/cachix-action@v12
@@ -157,10 +150,32 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           pushFilter: cri-o
       - run: nix-build nix/default-arm64.nix
-      - run: file result/bin/crio
+      - run: file result/bin/crio | grep aarch64
       - uses: actions/upload-artifact@v3
         with:
           name: build-static-arm64
+          path: |
+            result/bin/crio
+            result/bin/crio-status
+            result/bin/pinns
+
+  build-static-ppc64le:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v23
+        with:
+          install_url: https://releases.nixos.org/nix/nix-${{ env.NIX_VERSION }}/install
+      - uses: cachix/cachix-action@v12
+        with:
+          name: cri-o-static
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          pushFilter: cri-o
+      - run: nix-build nix/default-ppc64le.nix
+      - run: file result/bin/crio | grep PowerPC
+      - uses: actions/upload-artifact@v3
+        with:
+          name: build-static-ppc64le
           path: |
             result/bin/crio
             result/bin/crio-status
@@ -172,16 +187,12 @@ jobs:
       - build
       - build-static-amd64
       - build-static-arm64
+      - build-static-ppc64le
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/cache@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-            /tmp/spdx # default bom cache directory
-          key: go-bundles-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-bundles-
+          go-version: ${{ env.GO_VERSION }}
       - uses: actions/download-artifact@v3
         with:
           name: build-static-amd64
@@ -192,14 +203,15 @@ jobs:
           path: bin/static-arm64
       - uses: actions/download-artifact@v3
         with:
+          name: build-static-ppc64le
+          path: bin/static-ppc64le
+      - uses: actions/download-artifact@v3
+        with:
           name: docs
           path: docs
       - uses: actions/download-artifact@v3
         with:
           name: config
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ${{ env.GO_VERSION }}
       - run: chmod -R +x bin
       - run: make bundles
       - uses: actions/upload-artifact@v3
@@ -211,7 +223,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: bundles
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v3
         with:
           name: bundle
@@ -222,8 +234,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: bundles
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: actions/download-artifact@v3
@@ -236,8 +248,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: bundles
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: actions/download-artifact@v3
@@ -245,6 +257,22 @@ jobs:
           name: bundle
           path: build/bundle
       - run: make bundle-test-e2e-conmonrs
+
+  bundle-test-kubernetes:
+    runs-on: macos-12
+    needs: bundles
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.vagrant.d/boxes
+          key: e2e-fedora-${{ hashFiles('hack/ci/Vagrantfile-fedora') }}
+      - uses: actions/download-artifact@v3
+        with:
+          name: bundle
+          path: build/bundle
+      - run: make bundle-test-kubernetes
 
   sign-artifacts:
     if: github.ref == 'refs/heads/main' || contains(github.ref, 'refs/heads/release') || contains(github.ref, 'refs/tags')
@@ -255,7 +283,7 @@ jobs:
       COSIGN_EXPERIMENTAL: 1
     needs: bundle-test
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: sigstore/cosign-installer@v3
       - uses: actions/download-artifact@v3
         with:
@@ -274,7 +302,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: sign-artifacts
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v3
         with:
           name: bundle
@@ -294,7 +322,7 @@ jobs:
       - upload-artifacts
       - release-notes
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v3
         with:
           name: bundle
@@ -319,17 +347,10 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/checkout@v3
-      - uses: actions/cache@v3
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-unit-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-unit-
       - run: scripts/github-actions-packages
       - run: |
           make mockgen -j $(nproc)
@@ -344,7 +365,7 @@ jobs:
     needs: unit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/download-artifact@v3
@@ -359,20 +380,13 @@ jobs:
     if: github.ref == 'refs/heads/main' || contains(github.ref, 'refs/heads/release') || contains(github.ref, 'refs/tags')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
-      - uses: actions/cache@v3
+      - uses: actions/setup-go@v4
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-build-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-build-
+          go-version: ${{ env.GO_VERSION }}
       - name: Set current branch
         run: |
           raw=$(git branch -r --contains ${{ github.ref }})
@@ -394,20 +408,13 @@ jobs:
     needs: release-notes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
-      - uses: actions/cache@v3
+      - uses: actions/setup-go@v4
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-build-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-build-
+          go-version: ${{ env.GO_VERSION }}
       - run: make dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -422,20 +429,13 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v3
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
-      - uses: actions/cache@v3
+      - uses: actions/setup-go@v4
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-build-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-build-
+          go-version: ${{ env.GO_VERSION }}
       - run: make release-branch-forward
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -447,9 +447,21 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v2
         with:
           languages: go
       - uses: github/codeql-action/autobuild@v2
       - uses: github/codeql-action/analyze@v2
+
+  security-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run Govulncheck
+        run: make verify-govulncheck
+      - name: Run Gosec
+        run: make verify-gosec

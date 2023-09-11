@@ -59,6 +59,10 @@ CRI-O reads its storage defaults from the containers-storage.conf(5) file locate
   Whether CRI-O should wipe containers after a reboot and images after an upgrade when the server starts.
   If set to false, one must run `crio wipe` to wipe the containers and images in these situations.
 
+**internal_repair**=false
+  InternalRepair is whether CRI-O should check if the container and image storage was corrupted after a sudden restart.
+  If it was, CRI-O also attempts to repair the storage.
+
 **clean_shutdown_file**="/var/lib/crio/clean.shutdown"
   Location for CRI-O to lay down the clean shutdown file.
   It is used to check whether crio had time to sync before shutting down.
@@ -133,6 +137,7 @@ the container runtime configuration.
 
 **seccomp_profile**=""
   Path to the seccomp.json profile which is used as the default seccomp profile for the runtime. If not specified, then the internal default seccomp profile will be used.
+  This option is currently deprecated, and will be replaced by the SeccompDefault FeatureGate in Kubernetes.
 
 **seccomp_use_default_when_empty**=true
   Changes the meaning of an empty seccomp profile.  By default (and according to CRI spec), an empty profile means unconfined.
@@ -240,7 +245,7 @@ the container runtime configuration.
   This option is deprecated. The Kubelet flag `--container-log-max-size` should be used instead.
 
 **log_to_journald**=false
-  Whether container output should be logged to journald in addition to the kuberentes log file.
+  Whether container output should be logged to journald in addition to the kubernetes log file.
 
 **container_exits_dir**="/var/run/crio/exits"
   Path to directory in which container exit files are written to by conmon.
@@ -271,7 +276,7 @@ the container runtime configuration.
 
 **drop_infra_ctr**=true
   Determines whether we drop the infra container when a pod does not have a private PID namespace, and does not use a kernel separating runtime (like kata).
-  Requies **manage_ns_lifecycle** to be true.
+  Requires **manage_ns_lifecycle** to be true.
 
 **infra_ctr_cpuset**=""
     Determines the CPU set to run infra containers. If not specified, the CRI-O will use all online CPUs to run infra containers.
@@ -298,6 +303,9 @@ Enable CRI-O to generate the container pod-level events in order to optimize the
 
 **hostnetwork_disable_selinux**=true
  Determines whether SELinux should be disabled within a pod when it is running in the host network namespace.
+
+**disable_hostport_mapping**=false
+ Enable/Disable the container hostport mapping in CRI-O. Default value is set to 'false'.
 
 ### CRIO.RUNTIME.RUNTIMES TABLE
 The "crio.runtime.runtimes" table defines a list of OCI compatible runtimes.  The runtime to use is picked based on the runtime handler provided by the CRI.  If no runtime handler is provided, the runtime will be picked based on the level of trust of the workload. This option supports live configuration reload. This option supports live configuration reload.
@@ -327,6 +335,9 @@ The "crio.runtime.runtimes" table defines a list of OCI compatible runtimes.  Th
   "io.kubernetes.cri-o.UnifiedCgroup.$CTR_NAME" for configuring the cgroup v2 unified block for a container.
   "io.containers.trace-syscall" for tracing syscalls via the OCI seccomp BPF hook.
 
+**platform_runtime_paths**={}
+  A mapping of platforms to the corresponding runtime executable paths for the runtime handler.
+
 ### CRIO.RUNTIME.WORKLOADS TABLE
 The "crio.runtime.workloads" table defines a list of workloads - a way to customize the behavior of a pod and container.
 A workload is chosen for a pod based on whether the workload's **activation_annotation** is an annotation on the pod.
@@ -347,6 +358,7 @@ A workload is chosen for a pod based on whether the workload's **activation_anno
   "io.kubernetes.cri-o.UnifiedCgroup.$CTR_NAME" for configuring the cgroup v2 unified block for a container.
   "io.containers.trace-syscall" for tracing syscalls via the OCI seccomp BPF hook.
   "io.kubernetes.cri-o.seccompNotifierAction" for enabling the seccomp notifier feature.
+  "io.kubernetes.cri-o.umask" for setting the umask for container init process.
 
 #### Using the seccomp notifier feature:
 
@@ -396,7 +408,7 @@ CRI-O reads its configured registries defaults from the system wide containers-r
 **global_auth_file**=""
   The path to a file like /var/lib/kubelet/config.json holding credentials necessary for pulling images from secure registries.
 
-**pause_image**="registry.k8s.io/pause:3.6"
+**pause_image**="registry.k8s.io/pause:3.9"
   The image used to instantiate infra containers. This option supports live configuration reload.
 
 **pause_image_auth_file**=""
@@ -405,8 +417,14 @@ CRI-O reads its configured registries defaults from the system wide containers-r
 **pause_command**="/pause"
   The command to run to have a container stay in the paused state. This option supports live configuration reload.
 
+**pinned_images**=[]
+  A list of images to be excluded from the kubelet's garbage collection. It allows specifying image names using either exact, glob, or keyword patterns. Exact matches must match the entire name, glob matches can have a wildcard * at the end, and keyword matches can have wildcards on both ends. By default, this list includes the `pause` image if configured by the user, which is used as a placeholder in Kubernetes pods.
+
 **signature_policy**=""
   Path to the file which decides what sort of policy we use when deciding whether or not to trust an image that we've pulled. It is not recommended that this option be used, as the default behavior of using the system-wide default policy (i.e., /etc/containers/policy.json) is most often preferred. Please refer to containers-policy.json(5) for more details.
+
+**signature_policy_dir**="/etc/crio/policies"
+  Root path for pod namespace-separated signature policies. The final policy to be used on image pull will be <SIGNATURE_POLICY_DIR>/<NAMESPACE>.json. If no pod namespace is being provided on image pull (via the sandbox config), or the concatenated path is non existent, then the signature_policy or system wide policy will be used as fallback. Must be an absolute path.
 
 **image_volumes**="mkdir"
   Controls how image volumes are handled. The valid values are mkdir, bind and ignore; the latter will ignore volumes entirely.
@@ -441,7 +459,7 @@ The `crio.metrics` table containers settings pertaining to the Prometheus based 
 **enable_metrics**=false
   Globally enable or disable metrics support.
 
-**metrics_collectors**=["operations", "operations_latency_microseconds_total", "operations_latency_microseconds", "operations_errors", "image_pulls_by_digest", "image_pulls_by_name", "image_pulls_by_name_skipped", "image_pulls_failures", "image_pulls_successes", "image_pulls_layer_size", "image_layer_reuse", "containers_oom_total", "containers_oom", "processes_defunct"]
+**metrics_collectors**=["operations", "operations_latency_microseconds_total", "operations_latency_microseconds", "operations_errors", "image_pulls_by_digest", "image_pulls_by_name", "image_pulls_by_name_skipped", "image_pulls_failures", "image_pulls_successes", "image_pulls_layer_size", "image_layer_reuse", "containers_events_dropped_total", "containers_oom_total", "containers_oom", "processes_defunct"]
   Enabled metrics collectors
 
 **metrics_port**=9090

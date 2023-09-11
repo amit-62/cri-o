@@ -72,7 +72,7 @@ func (r *RootlessNetNS) Cleanup(runtime *Runtime) error {
 }
 
 // GetRootlessNetNs returns the rootless netns object. If create is set to true
-// the rootless network namespace will be created if it does not exists already.
+// the rootless network namespace will be created if it does not already exist.
 // If called as root it returns always nil.
 // On success the returned RootlessCNI lock is locked and must be unlocked by the caller.
 func (r *Runtime) GetRootlessNetNs(new bool) (*RootlessNetNS, error) {
@@ -84,8 +84,4 @@ func (r *Runtime) GetRootlessNetNs(new bool) (*RootlessNetNS, error) {
 // For machine the HostIP must only be used by gvproxy and never in the VM.
 func (c *Container) convertPortMappings() []types.PortMapping {
 	return []types.PortMapping{}
-}
-
-func GetSlirp4netnsIP(subnet *net.IPNet) (*net.IP, error) {
-	return nil, errors.New("not implemented GetSlirp4netnsIP")
 }

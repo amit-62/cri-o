@@ -9,7 +9,7 @@ import (
 
 	"github.com/cri-o/cri-o/utils/cmdrunner"
 	"github.com/sirupsen/logrus"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+	"k8s.io/utils/cpuset"
 )
 
 func isASCII(s string) bool {
@@ -119,7 +119,7 @@ func UpdateIRQSmpAffinityMask(cpus, current string, set bool) (cpuMask, bannedCP
 	}
 	invertedMaskArray := invertByteArray(currentMaskArray)
 
-	for _, cpu := range podcpuset.ToSlice() {
+	for _, cpu := range podcpuset.List() {
 		if set {
 			// each byte represent 8 cpus
 			currentMaskArray[cpu/8] |= cpuMaskByte(cpu % 8)

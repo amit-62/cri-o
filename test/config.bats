@@ -26,7 +26,7 @@ function teardown() {
 
 	# when
 	start_crio_no_setup
-	output=$("${CRIO_STATUS_BINARY_PATH}" --socket="${CRIO_SOCKET}" config)
+	output=$("${CRIO_BINARY_PATH}" status --socket="${CRIO_SOCKET}" config)
 
 	# then
 	[[ "$output" == *"pids_limit = 5678"* ]]
@@ -38,10 +38,9 @@ function teardown() {
 	printf '[crio.runtime]\nlog_level = "wrong-level"\n' > "$CRIO_CONFIG_DIR"/00-default
 
 	# when
-	run "$CRIO_BINARY_PATH" -c "$CRIO_CONFIG" -d "$CRIO_CONFIG_DIR"
+	run ! "$CRIO_BINARY_PATH" -c "$CRIO_CONFIG" -d "$CRIO_CONFIG_DIR"
 
 	# then
-	[ "$status" -ne 0 ]
 	[[ "$output" == *"not a valid logrus"*"wrong-level"* ]]
 }
 
@@ -50,9 +49,7 @@ function teardown() {
 	printf '[crio.runtime]\nenable_pod_events = "on"\n' > "$CRIO_CONFIG_DIR"/00-default
 
 	# when
-	run "$CRIO_BINARY_PATH" -c "$CRIO_CONFIG" -d "$CRIO_CONFIG_DIR"
-	# then
-	[ "$status" -ne 0 ]
+	run ! "$CRIO_BINARY_PATH" -c "$CRIO_CONFIG" -d "$CRIO_CONFIG_DIR"
 }
 
 @test "choose different default runtime should succeed" {
@@ -118,4 +115,15 @@ EOF
 
 	# then
 	"$CRIO_BINARY_PATH" -c "$TESTDIR"/workload.conf -d "" config
+}
+
+@test "config dir should fail with invalid disable_hostport_mapping option" {
+	# given
+	printf '[crio.runtime]\ndisable_hostport_mapping = false\n' > "$CRIO_CONFIG"
+	printf '[crio.runtime]\ndisable_hostport_mapping = "no"\n' > "$CRIO_CONFIG_DIR"/00-default
+
+	# when
+	run "$CRIO_BINARY_PATH" -c "$CRIO_CONFIG" -d "$CRIO_CONFIG_DIR"
+	# then
+	[ "$status" -ne 0 ]
 }

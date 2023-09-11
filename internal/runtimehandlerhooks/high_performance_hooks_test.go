@@ -40,73 +40,6 @@ var _ = Describe("high_performance_hooks", func() {
 		Expect(err).To(BeNil())
 	})
 
-	Describe("setCPUSLoadBalancing", func() {
-		verifySetCPULoadBalancing := func(enabled bool, expected string) {
-			err := setCPUSLoadBalancing(container, enabled, fixturesDir)
-			Expect(err).To(BeNil())
-
-			for _, cpu := range []string{"cpu0", "cpu1"} {
-				content, err := os.ReadFile(filepath.Join(fixturesDir, cpu, "domain0", "flags"))
-				Expect(err).To(BeNil())
-
-				Expect(strings.Trim(string(content), "\n")).To(Equal(expected))
-			}
-		}
-
-		JustBeforeEach(func() {
-			// set container CPUs
-			container.SetSpec(
-				&specs.Spec{
-					Linux: &specs.Linux{
-						Resources: &specs.LinuxResources{
-							CPU: &specs.LinuxCPU{
-								Cpus: "0,1",
-							},
-						},
-					},
-				},
-			)
-
-			// create tests flags files
-			for _, cpu := range []string{"cpu0", "cpu1"} {
-				flagsDir := filepath.Join(fixturesDir, cpu, "domain0")
-				err = os.MkdirAll(flagsDir, os.ModePerm)
-				Expect(err).To(BeNil())
-
-				err = os.WriteFile(filepath.Join(flagsDir, "flags"), []byte(flags), 0o644)
-				Expect(err).To(BeNil())
-			}
-		})
-
-		AfterEach(func() {
-			for _, cpu := range []string{"cpu0", "cpu1"} {
-				if err := os.RemoveAll(filepath.Join(fixturesDir, cpu)); err != nil {
-					log.Errorf(context.TODO(), "failed to remove temporary test files: %v", err)
-				}
-			}
-		})
-
-		Context("with enabled equals to true", func() {
-			BeforeEach(func() {
-				flags = "4142"
-			})
-
-			It("should enable the CPU load balancing", func() {
-				verifySetCPULoadBalancing(true, "4143")
-			})
-		})
-
-		Context("with enabled equals to false", func() {
-			BeforeEach(func() {
-				flags = "4143"
-			})
-
-			It("should disable the CPU load balancing", func() {
-				verifySetCPULoadBalancing(false, "4142")
-			})
-		})
-	})
-
 	Describe("setIRQLoadBalancingUsingDaemonCommand", func() {
 		irqSmpAffinityFile := filepath.Join(fixturesDir, "irq_smp_affinity")
 		irqBalanceConfigFile := filepath.Join(fixturesDir, "irqbalance")
@@ -320,6 +253,17 @@ var _ = Describe("high_performance_hooks", func() {
 
 			It("should change the CPU PM QOS latency", func() {
 				verifySetCPUPMQOSResumeLatency("0", "0", "n/a", false)
+			})
+		})
+
+		Context("with 10 latency", func() {
+			BeforeEach(func() {
+				pmQosResumeLatencyUs = "n/a"
+				pmQosResumeLatencyUsOriginal = ""
+			})
+
+			It("should change the CPU PM QOS latency", func() {
+				verifySetCPUPMQOSResumeLatency("10", "10", "n/a", false)
 			})
 		})
 
@@ -562,62 +506,66 @@ var _ = Describe("high_performance_hooks", func() {
 		})
 	})
 
-	Describe("setCPUQuota", func() {
-		containerID := container.ID()
-		parent := "parent.slice"
-		child := "crio" + "-" + containerID + ".scope"
-		childCgroup := parent + ":" + "crio" + ":" + containerID
-		cpuMountPoint := filepath.Join(fixturesDir, "cgroup", "cpu")
-		parentFolder := filepath.Join(cpuMountPoint, parent)
-		childFolder := filepath.Join(cpuMountPoint, parent, child)
+	Describe("convertAnnotationToLatency", func() {
+		verifyConvertAnnotationToLatency := func(annotation string, expected string, expect_error bool) {
+			latency, err := convertAnnotationToLatency(annotation)
+			if !expect_error {
+				Expect(err).ShouldNot(HaveOccurred())
+			} else {
+				Expect(err).Should(HaveOccurred())
+			}
 
-		verifySetCPUQuota := func(enabled bool, expected string) {
-			err := setCPUQuota(cpuMountPoint, parent, container, enabled)
-			Expect(err).To(BeNil())
-
-			content, err := os.ReadFile(filepath.Join(childFolder, "cpu.cfs_quota_us"))
-			Expect(err).To(BeNil())
-			Expect(strings.Trim(string(content), "\n")).To(Equal(expected))
-
-			content, err = os.ReadFile(filepath.Join(parentFolder, "cpu.cfs_quota_us"))
-			Expect(err).To(BeNil())
-			Expect(strings.Trim(string(content), "\n")).To(Equal(expected))
+			if expected != "" {
+				Expect(err).To(BeNil())
+				Expect(latency).To(Equal(expected))
+			}
 		}
 
-		BeforeEach(func() {
-			if err := os.MkdirAll(childFolder, os.ModePerm); err != nil {
-				log.Errorf(context.TODO(), "failed to create temporary cgroup folder: %v", err)
-			}
-			if err := os.WriteFile(filepath.Join(parentFolder, "cpu.cfs_quota_us"), []byte("900\n"), 0o644); err != nil {
-				log.Errorf(context.TODO(), "failed to create cpu.cfs_quota_us cgroup file: %v", err)
-			}
-			if err := os.WriteFile(filepath.Join(childFolder, "cpu.cfs_quota_us"), []byte("900\n"), 0o644); err != nil {
-				log.Errorf(context.TODO(), "failed to create cpu.cfs_quota_us cgroup file: %v", err)
-			}
-			container.SetSpec(
-				&specs.Spec{
-					Linux: &specs.Linux{
-						CgroupsPath: childCgroup,
-					},
-				},
-			)
-		})
-
-		AfterEach(func() {
-			if err := os.RemoveAll(parentFolder); err != nil {
-				log.Errorf(context.TODO(), "failed to remove temporary cgroup folder: %v", err)
-			}
-		})
-
-		Context("with enabled equals to true", func() {
-			It("should set cpu.cfs_quota_us to 0", func() {
-				verifySetCPUQuota(true, "0")
+		Context("with enable annotation", func() {
+			It("should result in latency: 0", func() {
+				verifyConvertAnnotationToLatency("enable", "0", false)
 			})
 		})
 
-		Context("with enabled equals to false", func() {
-			It("should set cpu.cfs_quota_us to -1", func() {
-				verifySetCPUQuota(false, "-1")
+		Context("with disable annotation", func() {
+			It("should result in latency: n/a", func() {
+				verifyConvertAnnotationToLatency("disable", "n/a", false)
+			})
+		})
+
+		Context("with max_latency:10 annotation", func() {
+			It("should result in latency: 10", func() {
+				verifyConvertAnnotationToLatency("max_latency:10", "10", false)
+			})
+		})
+
+		Context("with max_latency:1 annotation", func() {
+			It("should result in latency: 1", func() {
+				verifyConvertAnnotationToLatency("max_latency:1", "1", false)
+			})
+		})
+
+		Context("with max_latency:0 annotation", func() {
+			It("should result in error", func() {
+				verifyConvertAnnotationToLatency("max_latency:0", "", true)
+			})
+		})
+
+		Context("with max_latency:-1 annotation", func() {
+			It("should result in error", func() {
+				verifyConvertAnnotationToLatency("max_latency:-1", "", true)
+			})
+		})
+
+		Context("with max_latency:bad annotation", func() {
+			It("should result in error", func() {
+				verifyConvertAnnotationToLatency("max_latency:bad", "", true)
+			})
+		})
+
+		Context("with bad annotation", func() {
+			It("should result in error", func() {
+				verifyConvertAnnotationToLatency("bad", "", true)
 			})
 		})
 	})

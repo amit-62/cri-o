@@ -18,8 +18,11 @@ if [[ -n "$TEST_USERNS" ]]; then
     fi
 fi
 
-# Load the helpers.
-. helpers.bash
+# Preload images.
+(
+    . common.sh
+    get_images
+)
 
 function execute() {
     echo >&2 ++ "$@"
@@ -30,10 +33,9 @@ function execute() {
 TESTS=("${@:-.}")
 
 # The number of parallel jobs to execute tests
-export JOBS=${JOBS:-$(($(nproc --all) * 4))}
+export JOBS=${JOBS:-$(nproc --all)}
+
+bats --version
 
 # Run the tests.
 execute bats --jobs "$JOBS" --tap "${TESTS[@]}"
-# Set this var to run irqbalance tests
-export TEST_SERIAL="Yes"
-execute bats --tap ./irqbalance.bats

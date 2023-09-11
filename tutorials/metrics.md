@@ -20,15 +20,14 @@ metrics_port = 9090
 If CRI-O runs with enabled metrics, then this can be verified by querying the
 endpoint manually via [curl][1].
 
-```bash
-> curl localhost:9090/metrics
-…
+```shell
+curl localhost:9090/metrics
 ```
 
 It is also possible to serve the metrics via HTTPs, by providing an additional
 certificate and key:
 
-```
+```toml
 [crio.metrics]
 enable_metrics = true
 metrics_cert = "/path/to/cert.pem"
@@ -37,8 +36,10 @@ metrics_key = "/path/to/key.pem"
 
 ## Available Metrics
 
-Beside the [default golang based metrics][2], CRI-O provides the following additional metrics:
+Beside the [default golang based metrics][2], CRI-O provides
+the following additional metrics:
 
+<!-- markdownlint-disable MD013 MD033 -->
 | Metric Key                                       | Possible Labels or Buckets                                                                                                                                      | Type      | Purpose                                                                                                                                                           |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `crio_operations_total`                          | every CRI-O RPC\* `operation`                                                                                                                                   | Counter   | Cumulative number of CRI-O operations by operation type.                                                                                                          |
@@ -51,6 +52,7 @@ Beside the [default golang based metrics][2], CRI-O provides the following addit
 | `crio_image_pulls_failure_total`                 | `error`                                                                                                                                                         | Counter   | Failed image pulls by their error category.                                                                                                                       |
 | `crio_image_pulls_layer_size_{sum,count,bucket}` | buckets in byte for layer sizes of 1 KiB, 1 MiB, 10 MiB, 50 MiB, 100 MiB, 200 MiB, 300 MiB, 400 MiB, 500 MiB, 1 GiB, 10 GiB                                     | Histogram | Bytes transferred by CRI-O image pulls per layer.                                                                                                                 |
 | `crio_image_layer_reuse_total`                   |                                                                                                                                                                 | Counter   | Reused (not pulled) local image layer count by name.                                                                                                              |
+| `crio_containers_dropped_events_total`           |                                                                                                                                                                 | Counter   | The total number of container events dropped.                                                                                                                     |
 | `crio_containers_oom_total`                      |                                                                                                                                                                 | Counter   | Total number of containers killed because they ran out of memory (OOM).                                                                                           |
 | `crio_containers_oom_count_total`                | `name`                                                                                                                                                          | Counter   | Containers killed because they ran out of memory (OOM) by their name.<br>The label `name` can have high cardinality sometimes but it is in the interest of users giving them the ease to identify which container(s) are going into OOM state. Also, ideally very few containers should OOM keeping the label cardinality of `name` reasonably low. |
 | `crio_containers_seccomp_notifier_count_total`   | `name`, `syscall`                                                                                                                                               | Counter   | Forbidden `syscall` count resulting in killed containers by `name`.                                                                                               |
@@ -66,7 +68,7 @@ Beside the [default golang based metrics][2], CRI-O provides the following addit
 | `crio_image_pulls_failures`                      | `name`, `error`                                                                                                                                                 | Counter   | (DEPRECATED: in favour of `crio_image_pulls_failure_total`) Failed image pulls by image name and their error category.                                            |
 | `crio_image_layer_reuse`                         | `name`                                                                                                                                                          | Counter   | (DEPRECATED: in favour of `crio_image_layer_reuse_total`) Reused (not pulled) local image layer count by name.                                                    |
 | `crio_containers_oom`                            | `name`                                                                                                                                                          | Counter   | (DEPRECATED: in favour of `crio_containers_oom_count_total`) Containers killed because they ran out of memory (OOM) by their name                                 |
-
+<!-- markdownlint-enable MD013 MD033 -->
 
 - Available CRI-O RPC's from the [gRPC API][3]: `Attach`, `ContainerStats`, `ContainerStatus`,
   `CreateContainer`, `Exec`, `ExecSync`, `ImageFsInfo`, `ImageStatus`,
@@ -140,7 +142,7 @@ quay.io][4].
 
 The deployment requires enabled [RBAC][5] within the target Kubernetes
 environment and creates a new [ClusterRole][6] to be able to list available
-nodes. Beside that a new Role wille be created to be able to update a config-map
+nodes. Beside that a new Role will be created to be able to update a config-map
 within the `cri-o-exporter` namespace. Please be aware that the exporter only
 works if the pod has access to the node IP from its namespace. This should
 generally work but might be restricted due to network configuration or policies.
@@ -153,8 +155,8 @@ simply apply the [cluster.yaml][7] from the root directory of this repository:
 
 [7]: ../contrib/metrics-exporter/cluster.yaml
 
-```
-> kubectl create -f contrib/metrics-exporter/cluster.yaml
+```shell
+kubectl create -f contrib/metrics-exporter/cluster.yaml
 ```
 
 The `CRIO_METRICS_PORT` environment variable is set per default to `"9090"` and
@@ -162,8 +164,8 @@ can be used to customize the metrics port for the nodes. If the deployment is
 up and running, it should log the registered nodes as well as that a new
 config-map has been created:
 
-```
-> kubectl logs -f cri-o-metrics-exporter-65c9b7b867-7qmsb
+```shell
+$ kubectl logs -f cri-o-metrics-exporter-65c9b7b867-7qmsb
 level=info msg="Getting cluster configuration"
 level=info msg="Creating Kubernetes client"
 level=info msg="Retrieving nodes"
@@ -183,8 +185,8 @@ Prometheus:
 
 [8]: https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config
 
-```
-> kubectl get cm cri-o-metrics-exporter -o yaml
+```shell
+kubectl get cm cri-o-metrics-exporter -o yaml
 ```
 
 ```yaml

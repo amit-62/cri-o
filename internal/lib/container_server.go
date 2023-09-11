@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -102,7 +103,27 @@ func New(ctx context.Context, configIface libconfig.Iface) (*ContainerServer, er
 		return nil, fmt.Errorf("cannot create container server: interface is nil")
 	}
 
-	imageService, err := storage.GetImageService(ctx, config.SystemContext, store, config.DefaultTransport, config.InsecureRegistries)
+	if config.InternalRepair && ShutdownWasUnclean(config) {
+		checkOptions := cstorage.CheckEverything()
+		report, err := store.Check(checkOptions)
+		if err != nil {
+			err = HandleUncleanShutdown(config, store)
+			if err != nil {
+				return nil, err
+			}
+		}
+		options := cstorage.RepairOptions{
+			RemoveContainers: true,
+		}
+		if errs := store.Repair(report, &options); len(errs) > 0 {
+			err = HandleUncleanShutdown(config, store)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	imageService, err := storage.GetImageService(ctx, store, config)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +221,21 @@ func (c *ContainerServer) LoadSandbox(ctx context.Context, id string) (sb *sandb
 		return nil, fmt.Errorf("parsing created timestamp annotation: %w", err)
 	}
 
-	sb, err = sandbox.New(id, m.Annotations[annotations.Namespace], name, m.Annotations[annotations.KubeName], filepath.Dir(m.Annotations[annotations.LogPath]), labels, kubeAnnotations, processLabel, mountLabel, &metadata, m.Annotations[annotations.ShmPath], m.Annotations[annotations.CgroupParent], privileged, m.Annotations[annotations.RuntimeHandler], m.Annotations[annotations.ResolvPath], m.Annotations[annotations.HostName], portMappings, hostNetwork, created, m.Annotations[crioann.UsernsModeAnnotation])
+	podLinuxOverhead := types.LinuxContainerResources{}
+	if v, found := m.Annotations[crioann.PodLinuxOverhead]; found {
+		if err := json.Unmarshal([]byte(v), &podLinuxOverhead); err != nil {
+			return nil, fmt.Errorf("error unmarshalling %s annotation: %w", crioann.PodLinuxOverhead, err)
+		}
+	}
+
+	podLinuxResources := types.LinuxContainerResources{}
+	if v, found := m.Annotations[crioann.PodLinuxResources]; found {
+		if err := json.Unmarshal([]byte(v), &podLinuxResources); err != nil {
+			return nil, fmt.Errorf("error unmarshalling %s annotation: %w", crioann.PodLinuxResources, err)
+		}
+	}
+
+	sb, err = sandbox.New(id, m.Annotations[annotations.Namespace], name, m.Annotations[annotations.KubeName], filepath.Dir(m.Annotations[annotations.LogPath]), labels, kubeAnnotations, processLabel, mountLabel, &metadata, m.Annotations[annotations.ShmPath], m.Annotations[annotations.CgroupParent], privileged, m.Annotations[annotations.RuntimeHandler], m.Annotations[annotations.ResolvPath], m.Annotations[annotations.HostName], portMappings, hostNetwork, created, m.Annotations[crioann.UsernsModeAnnotation], &podLinuxOverhead, &podLinuxResources)
 	if err != nil {
 		return nil, err
 	}
@@ -425,6 +460,11 @@ func (c *ContainerServer) LoadContainer(ctx context.Context, id string) (retErr 
 		imgRef = ""
 	}
 
+	platformRuntimePath, ok := m.Annotations[crioann.PlatformRuntimePath]
+	if !ok {
+		platformRuntimePath = ""
+	}
+
 	kubeAnnotations := make(map[string]string)
 	if err := json.Unmarshal([]byte(m.Annotations[annotations.Annotations]), &kubeAnnotations); err != nil {
 		return err
@@ -454,6 +494,8 @@ func (c *ContainerServer) LoadContainer(ctx context.Context, id string) (retErr 
 		return fmt.Errorf("failed to write container state to disk %q: %w", ctr.ID(), err)
 	}
 	ctr.SetCreated()
+
+	ctr.SetRuntimePathForPlatform(platformRuntimePath)
 
 	c.AddContainer(ctx, ctr)
 
@@ -754,4 +796,38 @@ func (c *ContainerServer) UpdateContainerLinuxResources(ctr *oci.Container, reso
 	ctr.SetSpec(&updatedSpec)
 
 	c.state.containers.Add(ctr.ID(), ctr)
+}
+
+func ShutdownWasUnclean(config *libconfig.Config) bool {
+	// CleanShutdownFile not configured, skip
+	if config.CleanShutdownFile == "" {
+		return false
+	}
+	// CleanShutdownFile isn't supported, skip
+	if _, err := os.Stat(config.CleanShutdownSupportedFileName()); err != nil {
+		return false
+	}
+	// CleanShutdownFile is present, indicating clean shutdown
+	if _, err := os.Stat(config.CleanShutdownFile); err == nil {
+		return false
+	}
+	return true
+}
+
+func HandleUncleanShutdown(config *libconfig.Config, store cstorage.Store) error {
+	logrus.Infof("File %s not found. Wiping storage directory %s because of suspected dirty shutdown", config.CleanShutdownFile, store.GraphRoot())
+	// If we do not do this, we may leak other resources that are not directly in the graphroot.
+	// Erroring here should not be fatal though, it's a best effort cleanup
+	if err := store.Wipe(); err != nil {
+		logrus.Infof("Failed to wipe storage cleanly: %v", err)
+	}
+	// unmount storage or else we will fail with EBUSY
+	if _, err := store.Shutdown(false); err != nil {
+		return fmt.Errorf("failed to shutdown storage before wiping: %w", err)
+	}
+	// totally remove storage, whatever is left (possibly orphaned layers)
+	if err := os.RemoveAll(store.GraphRoot()); err != nil {
+		return fmt.Errorf("failed to remove storage directory: %w", err)
+	}
+	return nil
 }

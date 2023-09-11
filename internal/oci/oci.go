@@ -14,9 +14,8 @@ import (
 	"github.com/cri-o/cri-o/pkg/config"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/net/context"
-	types "k8s.io/cri-api/pkg/apis/runtime/v1"
-
 	"k8s.io/client-go/tools/remotecommand"
+	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 const (
@@ -135,7 +134,7 @@ func (r *Runtime) getRuntimeHandler(handler string) (*config.RuntimeHandler, err
 	return rh, nil
 }
 
-// PrivelegedRuntimeHandler returns a boolean value configured for the
+// PrivilegedWithoutHostDevices returns a boolean value configured for the
 // runtimeHandler indicating if devices on the host are passed/not passed
 // to a container running as privileged.
 func (r *Runtime) PrivilegedWithoutHostDevices(handler string) (bool, error) {
@@ -145,6 +144,19 @@ func (r *Runtime) PrivilegedWithoutHostDevices(handler string) (bool, error) {
 	}
 
 	return rh.PrivilegedWithoutHostDevices, nil
+}
+
+// PlatformRuntimePath returns the runtime path for a given platform.
+func (r *Runtime) PlatformRuntimePath(handler, platform string) (string, error) {
+	rh, err := r.getRuntimeHandler(handler)
+	if err != nil {
+		return "", err
+	}
+	if runtimePath, ok := rh.PlatformRuntimePaths[platform]; ok {
+		return runtimePath, nil
+	}
+
+	return "", nil
 }
 
 // AllowedAnnotations returns the allowed annotations for this runtime.
@@ -238,7 +250,7 @@ func (r *Runtime) StartContainer(ctx context.Context, c *Container) error {
 }
 
 // ExecContainer prepares a streaming endpoint to execute a command in the container.
-func (r *Runtime) ExecContainer(ctx context.Context, c *Container, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (r *Runtime) ExecContainer(ctx context.Context, c *Container, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resizeChan <-chan remotecommand.TerminalSize) error {
 	ctx, span := log.StartSpan(ctx)
 	defer span.End()
 	impl, err := r.RuntimeImpl(c)
@@ -246,7 +258,7 @@ func (r *Runtime) ExecContainer(ctx context.Context, c *Container, cmd []string,
 		return err
 	}
 
-	return impl.ExecContainer(ctx, c, cmd, stdin, stdout, stderr, tty, resize)
+	return impl.ExecContainer(ctx, c, cmd, stdin, stdout, stderr, tty, resizeChan)
 }
 
 // ExecSyncContainer execs a command in a container and returns it's stdout, stderr and return code.
@@ -370,7 +382,7 @@ func (r *Runtime) SignalContainer(ctx context.Context, c *Container, sig syscall
 }
 
 // AttachContainer attaches IO to a running container.
-func (r *Runtime) AttachContainer(ctx context.Context, c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (r *Runtime) AttachContainer(ctx context.Context, c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resizeChan <-chan remotecommand.TerminalSize) error {
 	ctx, span := log.StartSpan(ctx)
 	defer span.End()
 	impl, err := r.RuntimeImpl(c)
@@ -378,7 +390,7 @@ func (r *Runtime) AttachContainer(ctx context.Context, c *Container, inputStream
 		return err
 	}
 
-	return impl.AttachContainer(ctx, c, inputStream, outputStream, errorStream, tty, resize)
+	return impl.AttachContainer(ctx, c, inputStream, outputStream, errorStream, tty, resizeChan)
 }
 
 // PortForwardContainer forwards the specified port provides statistics of a container.

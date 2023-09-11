@@ -22,7 +22,7 @@ function teardown() {
 	CONTAINER_ENABLE_METRICS=true CONTAINER_METRICS_PORT=$PORT start_crio
 
 	# Run with runtime/default
-	jq '.linux.security_context.seccomp_profile_path = "runtime/default"' \
+	jq '.linux.security_context.seccomp.profile_type = 0' \
 		"$TESTDATA"/container_redis.json > "$TESTDIR"/container.json
 
 	# Enable the annotation in the sandbox
@@ -31,9 +31,8 @@ function teardown() {
 
 	CTR=$(crictl run "$TESTDIR"/container.json "$TESTDIR"/sandbox.json)
 
-	for ((i = 0; i < 3; i++)); do
-		run crictl exec -s "$CTR" swapoff -a
-		[ "$status" -ne 0 ]
+	for _ in 1 2 3; do
+		run ! crictl exec -s "$CTR" swapoff -a
 		sleep 1
 	done
 
@@ -54,7 +53,7 @@ function teardown() {
 	CONTAINER_ENABLE_METRICS=true CONTAINER_METRICS_PORT=$PORT start_crio
 
 	# Run with runtime/default
-	jq '.linux.security_context.seccomp_profile_path = "runtime/default"' \
+	jq '.linux.security_context.seccomp.profile_type = 0' \
 		"$TESTDATA"/container_redis.json > "$TESTDIR"/container.json
 
 	# Enable the annotation in the sandbox
@@ -63,9 +62,8 @@ function teardown() {
 
 	CTR=$(crictl run "$TESTDIR"/container.json "$TESTDIR"/sandbox.json)
 
-	for ((i = 0; i < 3; i++)); do
-		run crictl exec -s "$CTR" swapoff -a
-		[ "$status" -ne 0 ]
+	for _ in 1 2 3; do
+		run ! crictl exec -s "$CTR" swapoff -a
 		sleep 1
 	done
 
@@ -85,7 +83,7 @@ function teardown() {
 		"$CONTAINER_SECCOMP_PROFILE" > "$TESTDIR"/profile.json
 	sed -i 's;swapon;chmod;' "$TESTDIR"/profile.json
 
-	jq '.linux.security_context.seccomp_profile_path = "localhost/'"$TESTDIR"'/profile.json"' \
+	jq '.linux.security_context.seccomp.profile_type = 2 | .linux.security_context.seccomp.localhost_ref = "'"$TESTDIR"'/profile.json"' \
 		"$TESTDATA"/container_sleep.json > "$TESTDIR"/container.json
 
 	# Enable the annotation in the sandbox
@@ -93,21 +91,19 @@ function teardown() {
 		"$TESTDATA"/sandbox_config.json > "$TESTDIR"/sandbox.json
 
 	CTR=$(crictl run "$TESTDIR"/container.json "$TESTDIR"/sandbox.json)
-	for ((i = 0; i < 5; i++)); do
-		run crictl exec -s "$CTR" chmod 777 .
-		[ "$status" -ne 0 ]
+	for _ in 1 2 3 4 5; do
+		run ! crictl exec -s "$CTR" chmod 777 .
 
-		run crictl exec -s "$CTR" swapoff -a
-		[ "$status" -ne 0 ]
+		run ! crictl exec -s "$CTR" swapoff -a
 	done
 
 	sleep 6 # wait until the notifier stop the workload
 	EXPECTED_EXIT_STATUS=137 wait_until_exit "$CTR"
 
 	# Assert
-	grep -q "Got seccomp notifier message for container ID: $CTR (syscall = chmod)" "$CRIO_LOG"
+	grep -q "Got seccomp notifier message for container ID: $CTR (syscall = swapoff)" "$CRIO_LOG"
 	crictl inspect "$CTR" | jq -e '.status.reason == "seccomp killed"'
-	crictl inspect "$CTR" | jq -e '.status.message == "Used forbidden syscalls: chmod (5x), swapoff (5x)"'
+	crictl inspect "$CTR" | jq -e '.status.message == "Used forbidden syscalls: swapoff (5x)"'
 }
 
 @test "seccomp notifier should not work if annotation is not allowed" {
@@ -119,7 +115,7 @@ function teardown() {
 		"$CONTAINER_SECCOMP_PROFILE" > "$TESTDIR"/profile.json
 	sed -i 's;swapoff;chmod;' "$TESTDIR"/profile.json
 
-	jq '.linux.security_context.seccomp_profile_path = "localhost/'"$TESTDIR"'/profile.json"' \
+	jq '.linux.security_context.seccomp.profile_type = 2 | .linux.security_context.seccomp.localhost_ref = "'"$TESTDIR"'/profile.json"' \
 		"$TESTDATA"/container_sleep.json > "$TESTDIR"/container.json
 
 	# Enable the annotation in the sandbox
@@ -127,10 +123,9 @@ function teardown() {
 		"$TESTDATA"/sandbox_config.json > "$TESTDIR"/sandbox.json
 
 	CTR=$(crictl run "$TESTDIR"/container.json "$TESTDIR"/sandbox.json)
-	run crictl exec -s "$CTR" chmod 777 .
-	[ "$status" -ne 0 ]
+	run ! crictl exec -s "$CTR" chmod 777 .
 
 	# Assert
-	! grep -q "Got seccomp notifier message for container ID: $CTR" "$CRIO_LOG"
+	run ! grep -q "Got seccomp notifier message for container ID: $CTR" "$CRIO_LOG"
 	crictl inspect "$CTR" | jq -e '.status.state == "CONTAINER_RUNNING"'
 }

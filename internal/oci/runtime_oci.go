@@ -35,7 +35,6 @@ import (
 	kwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/remotecommand"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
-	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	utilexec "k8s.io/utils/exec"
 )
 
@@ -113,7 +112,7 @@ func (r *runtimeOCI) CreateContainer(ctx context.Context, c *Container, cgroupPa
 		"-P", c.conmonPidFilePath(),
 		"-p", filepath.Join(c.bundlePath, "pidfile"),
 		"--persist-dir", c.dir,
-		"-r", r.handler.RuntimePath,
+		"-r", c.RuntimePathForPlatform(r),
 		"--runtime-arg", fmt.Sprintf("%s=%s", rootFlag, r.root),
 		"--socket-dir-path", r.config.ContainerAttachSocketDir,
 		"--syslog",
@@ -394,7 +393,7 @@ func parseLog(ctx context.Context, l []byte) (stdout, stderr []byte) {
 }
 
 // ExecContainer prepares a streaming endpoint to execute a command in the container.
-func (r *runtimeOCI) ExecContainer(ctx context.Context, c *Container, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (r *runtimeOCI) ExecContainer(ctx context.Context, c *Container, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resizeChan <-chan remotecommand.TerminalSize) error {
 	_, span := log.StartSpan(ctx)
 	defer span.End()
 
@@ -410,13 +409,13 @@ func (r *runtimeOCI) ExecContainer(ctx context.Context, c *Container, cmd []stri
 
 	args := r.defaultRuntimeArgs()
 	args = append(args, "exec", "--process", processFile, c.ID())
-	execCmd := cmdrunner.Command(r.handler.RuntimePath, args...) // nolint: gosec
+	execCmd := cmdrunner.Command(c.RuntimePathForPlatform(r), args...) // nolint: gosec
 	if v, found := os.LookupEnv("XDG_RUNTIME_DIR"); found {
 		execCmd.Env = append(execCmd.Env, fmt.Sprintf("XDG_RUNTIME_DIR=%s", v))
 	}
 	var cmdErr, copyError error
 	if tty {
-		cmdErr = ttyCmd(execCmd, stdin, stdout, resize)
+		cmdErr = ttyCmd(execCmd, stdin, stdout, resizeChan)
 	} else {
 		var r, w *os.File
 		if stdin != nil {
@@ -526,7 +525,7 @@ func (r *runtimeOCI) ExecSyncContainer(ctx context.Context, c *Container, comman
 	args := []string{
 		"-c", c.ID(),
 		"-n", c.name,
-		"-r", r.handler.RuntimePath,
+		"-r", c.RuntimePathForPlatform(r),
 		"-p", pidFile,
 		"-e",
 		"-l", logPath,
@@ -765,7 +764,7 @@ func (r *runtimeOCI) UpdateContainer(ctx context.Context, c *Container, res *rsp
 		return nil
 	}
 
-	cmd := cmdrunner.Command(r.handler.RuntimePath, rootFlag, r.root, "update", "--resources", "-", c.ID()) // nolint: gosec
+	cmd := cmdrunner.Command(c.RuntimePathForPlatform(r), rootFlag, r.root, "update", "--resources", "-", c.ID()) // nolint: gosec
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -785,111 +784,10 @@ func (r *runtimeOCI) UpdateContainer(ctx context.Context, c *Container, res *rsp
 	return nil
 }
 
-func WaitContainerStop(ctx context.Context, c *Container, timeout time.Duration, ignoreKill bool) error {
-	ctx, span := log.StartSpan(ctx)
-	defer span.End()
-
-	done := make(chan struct{})
-	// we could potentially re-use "done" channel to exit the loop on timeout,
-	// but we use another channel "chControl" so that we never panic
-	// attempting to close an already-closed "done" channel.  The panic
-	// would occur in the "default" select case below if we'd closed the
-	// "done" channel (instead of the "chControl" channel) in the timeout
-	// select case.
-	chControl := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-chControl:
-				close(done)
-				return
-			default:
-				if err := c.verifyPid(); err != nil {
-					// The initial container process either doesn't exist, or isn't ours.
-					if !errors.Is(err, ErrNotFound) {
-						log.Warnf(ctx, "Failed to find process for container %s: %v", c.ID(), err)
-					}
-					close(done)
-					return
-				}
-				// the PID is still active and belongs to the container, continue to wait
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
-	}()
-	// Operate in terms of targetTime, so that we can pause in the middle of the operation
-	// to catch a new timeout (and possibly ignore that new timeout if it's not correct to
-	// take a new one).
-	targetTime := time.Now().Add(timeout)
-	killed := false
-	for !killed {
-		select {
-		case <-done:
-			return nil
-		case <-ctx.Done():
-			close(chControl)
-			return ctx.Err()
-		case <-time.After(time.Until(targetTime)):
-			close(chControl)
-			if ignoreKill {
-				return fmt.Errorf("timeout reached after %.0f seconds waiting for container process to exit",
-					timeout.Seconds())
-			}
-			pid, err := c.pid()
-			if err != nil {
-				return err
-			}
-			if err := Kill(pid); err != nil {
-				return fmt.Errorf("failed to kill process: %w", err)
-			}
-			killed = true
-		case newTimeout := <-c.stopTimeoutChan:
-			// If a new timeout comes in,
-			// interrupt the old one, and start a new one
-			newTargetTime := time.Now().Add(newTimeout)
-
-			// but only if it's earlier
-			if newTargetTime.After(targetTime) {
-				continue
-			}
-
-			targetTime = newTargetTime
-			timeout = newTimeout
-		}
-	}
-	c.state.Finished = time.Now()
-	// Successfully stopped! This is to prevent other routines from
-	// racing with this one and waiting forever.
-	// Close only the dedicated channel. If we close stopTimeoutChan,
-	// any other waiting goroutine will panic, not gracefully exit.
-	close(c.stoppedChan)
-	return nil
-}
-
 // StopContainer stops a container. Timeout is given in seconds.
 func (r *runtimeOCI) StopContainer(ctx context.Context, c *Container, timeout int64) (retErr error) {
 	ctx, span := log.StartSpan(ctx)
 	defer span.End()
-	if c.SetAsStopping(timeout) {
-		return nil
-	}
-	defer func() {
-		// Failed to stop, set stopping to false.
-		// Otherwise, we won't actually
-		// attempt to stop when a new request comes in,
-		// even though we're not actively stopping anymore.
-		// Also, close the stopStoppingChan to tell
-		// routines waiting to change the stop timeout to give up.
-		close(c.stopStoppingChan)
-		c.SetAsNotStopping()
-	}()
-
-	c.opLock.Lock()
-	defer c.opLock.Unlock()
-
-	if err := c.ShouldBeStopped(); err != nil {
-		return err
-	}
 
 	if c.Spoofed() {
 		c.state.Status = ContainerStateStopped
@@ -897,36 +795,103 @@ func (r *runtimeOCI) StopContainer(ctx context.Context, c *Container, timeout in
 		return nil
 	}
 
+	if err := c.ShouldBeStopped(); err != nil {
+		if errors.Is(err, ErrContainerStopped) {
+			err = nil
+		}
+		return err
+	}
+
 	// The initial container process either doesn't exist, or isn't ours.
-	if err := c.verifyPid(); err != nil {
+	if err := c.Living(); err != nil {
 		c.state.Finished = time.Now()
 		return nil
 	}
 
-	if timeout > 0 {
-		if _, err := r.runtimeCmd("kill", c.ID(), c.GetStopSignal()); err != nil {
-			checkProcessGone(c)
-		}
-		err := WaitContainerStop(ctx, c, time.Duration(timeout)*time.Second, true)
-		if err == nil {
-			return nil
-		}
-		log.Warnf(ctx, "Stopping container %v with stop signal timed out: %v", c.ID(), err)
+	if c.SetAsStopping() {
+		go r.StopLoopForContainer(c)
 	}
 
-	if _, err := r.runtimeCmd("kill", c.ID(), "KILL"); err != nil {
-		checkProcessGone(c)
-	}
-
-	return WaitContainerStop(ctx, c, killContainerTimeout, false)
+	c.WaitOnStopTimeout(ctx, timeout)
+	return nil
 }
 
-func checkProcessGone(c *Container) {
-	if err := c.verifyPid(); err != nil {
-		// The initial container process either doesn't exist, or isn't ours.
-		// Set state accordingly.
-		c.state.Finished = time.Now()
+func (r *runtimeOCI) StopLoopForContainer(c *Container) {
+	ctx := context.Background()
+	ctx, span := log.StartSpan(ctx)
+	defer span.End()
+
+	c.opLock.Lock()
+
+	// Begin the actual kill
+	if _, err := r.runtimeCmd("kill", c.ID(), c.GetStopSignal()); err != nil {
+		if err := c.Living(); err != nil {
+			// The initial container process either doesn't exist, or isn't ours.
+			// Set state accordingly.
+			c.state.Finished = time.Now()
+			c.opLock.Unlock()
+			return
+		}
 	}
+
+	done := make(chan struct{})
+	go func() {
+		for {
+			if err := c.Living(); err != nil {
+				// The initial container process either doesn't exist, or isn't ours.
+				if !errors.Is(err, ErrNotFound) {
+					log.Warnf(ctx, "Failed to find process for container %s: %v", c.ID(), err)
+				}
+				close(done)
+				return
+			}
+			// the PID is still active and belongs to the container, continue to wait
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+
+	// Operate in terms of targetTime, so that we can pause in the middle of the operation
+	// to catch a new timeout (and possibly ignore that new timeout if it's not correct to
+	// take a new one).
+	targetTime := time.Unix(1<<50-1, 0)
+	for finished := false; !finished; {
+		select {
+		case newTimeout := <-c.stopTimeoutChan:
+			// If a new timeout comes in,
+			// interrupt the old one, and start a new one
+			newTargetTime := time.Now().Add(time.Duration(newTimeout) * time.Second)
+
+			// but only if it's earlier
+			if newTargetTime.Before(targetTime) {
+				targetTime = newTargetTime
+			}
+
+		case <-time.After(time.Until(targetTime)):
+			log.Warnf(ctx, "Stopping container %v with stop signal timed out. Killing", c.ID())
+			if _, err := r.runtimeCmd("kill", c.ID(), "KILL"); err != nil {
+				log.Errorf(ctx, "Killing container %v failed: %v", c.ID(), err)
+			}
+			if err := c.Living(); err != nil {
+				finished = true
+				break
+			}
+
+		case <-done:
+			finished = true
+			break
+		}
+	}
+
+	c.state.Finished = time.Now()
+	c.opLock.Unlock()
+
+	c.stopLock.Lock()
+	for _, watcher := range c.stopWatchers {
+		close(watcher)
+	}
+	c.stopping = false
+	close(c.stopTimeoutChan)
+	c.stopLock.Unlock()
 }
 
 // DeleteContainer deletes a container.
@@ -1142,7 +1107,7 @@ func (r *runtimeOCI) signalContainer(c *Container, sig syscall.Signal, all bool)
 }
 
 // AttachContainer attaches IO to a running container.
-func (r *runtimeOCI) AttachContainer(ctx context.Context, c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (r *runtimeOCI) AttachContainer(ctx context.Context, c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resizeChan <-chan remotecommand.TerminalSize) error {
 	ctx, span := log.StartSpan(ctx)
 	defer span.End()
 	if c.Spoofed() {
@@ -1156,7 +1121,7 @@ func (r *runtimeOCI) AttachContainer(ctx context.Context, c *Container, inputStr
 	}
 	defer controlFile.Close()
 
-	kubecontainer.HandleResizing(resize, func(size remotecommand.TerminalSize) {
+	utils.HandleResizing(resizeChan, func(size remotecommand.TerminalSize) {
 		log.Debugf(ctx, "Got a resize event: %+v", size)
 		_, err := fmt.Fprintf(controlFile, "%d %d %d\n", 1, size.Height, size.Width)
 		if err != nil {
@@ -1474,8 +1439,8 @@ func (r *runtimeOCI) defaultRuntimeArgs() []string {
 func (r *runtimeOCI) CheckpointContainer(ctx context.Context, c *Container, specgen *rspec.Spec, leaveRunning bool) error {
 	c.opLock.Lock()
 	defer c.opLock.Unlock()
-
-	if err := r.checkpointRestoreSupported(); err != nil {
+	runtimePath := c.RuntimePathForPlatform(r)
+	if err := r.checkpointRestoreSupported(runtimePath); err != nil {
 		return err
 	}
 
@@ -1502,6 +1467,7 @@ func (r *runtimeOCI) CheckpointContainer(ctx context.Context, c *Container, spec
 	args = append(
 		args,
 		"checkpoint",
+		"--file-locks",
 		"--image-path",
 		imagePath,
 		"--work-path",
@@ -1515,7 +1481,7 @@ func (r *runtimeOCI) CheckpointContainer(ctx context.Context, c *Container, spec
 
 	_, err := r.runtimeCmd(args...)
 	if err != nil {
-		return fmt.Errorf("running %q %q failed: %w", r.handler.RuntimePath, args, err)
+		return fmt.Errorf("running %q %q failed: %w", runtimePath, args, err)
 	}
 
 	c.SetCheckpointedAt(time.Now())
@@ -1530,7 +1496,7 @@ func (r *runtimeOCI) CheckpointContainer(ctx context.Context, c *Container, spec
 
 // RestoreContainer restores a container.
 func (r *runtimeOCI) RestoreContainer(ctx context.Context, c *Container, cgroupParent, mountLabel string) error {
-	if err := r.checkpointRestoreSupported(); err != nil {
+	if err := r.checkpointRestoreSupported(c.RuntimePathForPlatform(r)); err != nil {
 		return err
 	}
 
@@ -1594,11 +1560,11 @@ func (r *runtimeOCI) RestoreContainer(ctx context.Context, c *Container, cgroupP
 	return nil
 }
 
-func (r *runtimeOCI) checkpointRestoreSupported() error {
-	if !criu.CheckForCriu(criu.PodCriuVersion) {
-		return fmt.Errorf("checkpoint/restore requires at least CRIU %d", criu.PodCriuVersion)
+func (r *runtimeOCI) checkpointRestoreSupported(runtimePath string) error {
+	if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+		return fmt.Errorf("check for CRIU %w", err)
 	}
-	if !crutils.CRRuntimeSupportsCheckpointRestore(r.handler.RuntimePath) {
+	if !crutils.CRRuntimeSupportsCheckpointRestore(runtimePath) {
 		return fmt.Errorf("configured runtime does not support checkpoint/restore")
 	}
 	return nil

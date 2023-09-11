@@ -3,7 +3,6 @@ package criocli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	libconfig "github.com/cri-o/cri-o/pkg/config"
@@ -11,9 +10,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
-
-// DefaultsPath is the path to default configuration files set at build time
-var DefaultsPath string
 
 // DefaultCommands are the flags commands can be added to every binary
 var DefaultCommands = []*cli.Command{
@@ -49,16 +45,6 @@ func mergeConfig(config *libconfig.Config, ctx *cli.Context) error {
 			if ctx.IsSet("config") || !os.IsNotExist(err) {
 				return err
 			}
-
-			// Use the build-time-defined defaults path
-			if DefaultsPath != "" && os.IsNotExist(err) {
-				path = filepath.Join(DefaultsPath, "/crio.conf")
-				if err := config.UpdateFromFile(path); err != nil {
-					if ctx.IsSet("config") || !os.IsNotExist(err) {
-						return err
-					}
-				}
-			}
 		}
 	}
 
@@ -91,6 +77,9 @@ func mergeConfig(config *libconfig.Config, ctx *cli.Context) error {
 	}
 	if ctx.IsSet("signature-policy") {
 		config.SignaturePolicyPath = ctx.String("signature-policy")
+	}
+	if ctx.IsSet("signature-policy-dir") {
+		config.SignaturePolicyDir = ctx.String("signature-policy-dir")
 	}
 	if ctx.IsSet("root") {
 		config.Root = ctx.String("root")
@@ -338,6 +327,9 @@ func mergeConfig(config *libconfig.Config, ctx *cli.Context) error {
 	if ctx.IsSet("internal-wipe") {
 		config.InternalWipe = ctx.Bool("internal-wipe")
 	}
+	if ctx.IsSet("internal-repair") {
+		config.InternalRepair = ctx.Bool("internal-repair")
+	}
 	if ctx.IsSet("enable-metrics") {
 		config.EnableMetrics = ctx.Bool("enable-metrics")
 	}
@@ -403,6 +395,12 @@ func mergeConfig(config *libconfig.Config, ctx *cli.Context) error {
 	}
 	if ctx.IsSet("hostnetwork-disable-selinux") {
 		config.HostNetworkDisableSELinux = ctx.Bool("hostnetwork-disable-selinux")
+	}
+	if ctx.IsSet("pinned-images") {
+		config.PinnedImages = StringSliceTrySplit(ctx, "pinned-images")
+	}
+	if ctx.IsSet("disable-hostport-mapping") {
+		config.DisableHostPortMapping = ctx.Bool("disable-hostport-mapping")
 	}
 	return nil
 }
@@ -547,6 +545,13 @@ func getCrioFlags(defConf *libconfig.Config) []cli.Flag {
 			TakesFile: true,
 		},
 		&cli.StringFlag{
+			Name:      "signature-policy-dir",
+			Usage:     "Path to the root directory for namespaced signature policies. Must be an absolute path.",
+			Value:     defConf.SignaturePolicyDir,
+			EnvVars:   []string{"CONTAINER_SIGNATURE_POLICY_DIR"},
+			TakesFile: true,
+		},
+		&cli.StringFlag{
 			Name:      "root",
 			Aliases:   []string{"r"},
 			Usage:     "The CRI-O root directory.",
@@ -624,7 +629,7 @@ func getCrioFlags(defConf *libconfig.Config) []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:    "seccomp-use-default-when-empty",
-			Usage:   "Use the default seccomp profile when an empty one is specified.",
+			Usage:   "Use the default seccomp profile when an empty one is specified. This option is currently deprecated, and will be replaced by the SeccompDefault FeatureGate in Kubernetes.",
 			EnvVars: []string{"CONTAINER_SECCOMP_USE_DEFAULT_WHEN_EMPTY"},
 			Value:   defConf.Seccomp().UseDefaultWhenEmpty(),
 		},
@@ -1076,6 +1081,12 @@ func getCrioFlags(defConf *libconfig.Config) []cli.Flag {
 			Value:   defConf.InternalWipe,
 			EnvVars: []string{"CONTAINER_INTERNAL_WIPE"},
 		},
+		&cli.BoolFlag{
+			Name:    "internal-repair",
+			Usage:   "If true, CRI-O will check if the container and image storage was corrupted after a sudden restart, and attempt to repair the storage if it was.",
+			EnvVars: []string{"CONTAINER_INTERNAL_REPAIR"},
+			Value:   defConf.InternalRepair,
+		},
 		&cli.StringFlag{
 			Name:    "infra-ctr-cpuset",
 			Usage:   "CPU set to run infra containers, if not specified CRI-O will use all online CPUs to run infra containers.",
@@ -1123,6 +1134,18 @@ func getCrioFlags(defConf *libconfig.Config) []cli.Flag {
 			EnvVars: []string{"CONTAINER_HOSTNETWORK_DISABLE_SELINUX"},
 			Value:   defConf.HostNetworkDisableSELinux,
 		},
+		&cli.StringSliceFlag{
+			Name:    "pinned-images",
+			Usage:   "A list of images that will be excluded from the kubelet's garbage collection.",
+			EnvVars: []string{"CONTAINER_PINNED_IMAGES"},
+			Value:   cli.NewStringSlice(defConf.PinnedImages...),
+		},
+		&cli.BoolFlag{
+			Name:    "disable-hostport-mapping",
+			Usage:   "If true, CRI-O would disable the hostport mapping.",
+			EnvVars: []string{"DISABLE_HOSTPORT_MAPPING"},
+			Value:   defConf.DisableHostPortMapping,
+		},
 	}
 }
 
@@ -1143,7 +1166,7 @@ func StringSliceTrySplit(ctx *cli.Context, name string) []string {
 		}
 
 		logrus.Infof(
-			"Parsed commma separated CLI flag %q into dedicated values %v",
+			"Parsed comma separated CLI flag %q into dedicated values %v",
 			name, values,
 		)
 

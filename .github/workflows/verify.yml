@@ -8,7 +8,8 @@ on:
       - release-*
   pull_request:
 env:
-  GO_VERSION: '1.20'
+  GO_VERSION: '1.21'
+  GOLANGCI_LINT_VERSION: v1.53.2
 permissions:
   contents: read
 
@@ -19,36 +20,56 @@ jobs:
       pull-requests: read  # for golangci/golangci-lint-action to fetch pull requests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: scripts/github-actions-packages
       - uses: golangci/golangci-lint-action@v3
         with:
-          version: v1.51.1
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  lint-markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the markdown
+        uses: DavidAnson/markdownlint-cli2-action@v12
+        with:
+          globs: |
+            **/*.md
+            !vendor
+            !docs
+            !.github
 
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: lumaxis/shellcheck-problem-matchers@v1
+    - uses: actions/checkout@v4
+    - uses: lumaxis/shellcheck-problem-matchers@v2
     - run: make shellcheck
 
   shfmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: make shfmt
 
+  space-at-eol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rm -fr vendor
+      - run: if git -P grep -I -n '\s$'; then echo "^^^ extra whitespace at EOL, please fix"; exit 1; fi
+
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: scripts/github-actions-packages
@@ -57,50 +78,35 @@ jobs:
   vendor:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/cache@v3
-        with:
-          path: ~/go/pkg/mod
-          key: go-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-
       - run: make check-vendor
 
   log-capitalization:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/cache@v3
-        with:
-          path: ~/go/pkg/mod
-          key: go-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-
       - run: make check-log-lines
 
   verify-config-template:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/cache@v3
-        with:
-          path: ~/go/pkg/mod
-          key: go-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-
       - run: make check-config-template
 
   get-script:
     if: ${{ github.base_ref == 'main' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - run: sudo scripts/get
       - run: crio version
 
@@ -108,17 +114,10 @@ jobs:
     if: ${{ github.base_ref == 'main' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/cache@v3
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-get-script-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-get-script-
       - uses: sigstore/cosign-installer@v3
       - run: |
           make get-script
@@ -132,13 +131,16 @@ jobs:
   dependencies:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/cache@v3
-        with:
-          path: ~/go/pkg/mod
-          key: go-verify-dependencies-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-verify-dependencies-
       - run: make verify-dependencies
+
+  typos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@v1.16.11
+        with:
+          config: .typos.toml

@@ -27,6 +27,6 @@ func getExitCode(err error) int32 {
 	return -1
 }
 
-func ttyCmd(cmd *exec.Cmd, stdin io.Reader, stdout io.WriteCloser, resize <-chan remotecommand.TerminalSize) error {
+func ttyCmd(cmd *exec.Cmd, stdin io.Reader, stdout io.WriteCloser, resizeChan <-chan remotecommand.TerminalSize) error {
 	return fmt.Errorf("unsupported")
 }

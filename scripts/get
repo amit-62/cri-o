@@ -3,6 +3,7 @@ set -euo pipefail
 
 ARCH_AMD64=amd64
 ARCH_ARM64=arm64
+ARCH_PPC64LE=ppc64le
 ARCH=
 VERSION=
 GITHUB_TOKEN=${GITHUB_TOKEN:-}
@@ -51,6 +52,8 @@ parse_args() {
             ARCH=$ARCH_AMD64
         elif [[ "$LOCAL_ARCH" == aarch64 ]]; then
             ARCH=$ARCH_ARM64
+        elif [[ "$LOCAL_ARCH" == "$ARCH_PPC64LE" ]]; then
+            ARCH=$ARCH_PPC64LE
         else
             echo "Unsupported local architecture: $LOCAL_ARCH"
             exit 1
@@ -157,6 +160,10 @@ if command -v cosign >/dev/null; then
         curl_retry "$BASE_URL/$FILE" -o "$FILE"
     done
 
+    GIT_REF=refs/heads/main
+    if git ls-remote --exit-code --tags https://github.com/cri-o/cri-o "refs/tags/$VERSION" >/dev/null; then
+        GIT_REF="refs/tags/$VERSION"
+    fi
     BLOBS=(
         "$TARBALL"
         "$SPDX"
@@ -164,8 +171,10 @@ if command -v cosign >/dev/null; then
     for BLOB in "${BLOBS[@]}"; do
         echo "Verifying blob $BLOB"
         COSIGN_EXPERIMENTAL=1 cosign verify-blob "$BLOB" \
-            --certificate-identity-regexp '.*' \
-            --certificate-oidc-issuer-regexp '.*' \
+            --certificate-identity "https://github.com/cri-o/cri-o/.github/workflows/test.yml@$GIT_REF" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-repository cri-o/cri-o \
+            --certificate-github-workflow-ref "$GIT_REF" \
             --signature "$BLOB.sig" \
             --certificate "$BLOB.cert"
     done
@@ -203,8 +212,16 @@ OCIDIR=${OCIDIR:-$PREFIX/share/oci-umount/oci-umount.d}
 BASHINSTALLDIR=${BASHINSTALLDIR:-$PREFIX/share/bash-completion/completions}
 FISHINSTALLDIR=${FISHINSTALLDIR:-$PREFIX/share/fish/completions}
 ZSHINSTALLDIR=${ZSHINSTALLDIR:-$PREFIX/share/zsh/site-functions}
-SYSTEMDDIR=${SYSTEMDDIR:-$PREFIX/lib/systemd/system}
 OPT_CNI_BIN_DIR=${OPT_CNI_BIN_DIR:-/opt/cni/bin}
+
+# Update systemddir based on OS
+source /etc/os-release
+if { [[ "${ID}" == "fedora" ]] && [[ "${VARIANT_ID}" == "coreos" ]]; } ||
+    [[ "${ID}" == "rhcos" ]]; then
+    SYSTEMDDIR=${SYSTEMDDIR:-/etc/systemd/system}
+else
+    SYSTEMDDIR=${SYSTEMDDIR:-$PREFIX/lib/systemd/system}
+fi
 
 SELINUX=
 if selinuxenabled 2>/dev/null; then
@@ -234,10 +251,17 @@ install $SELINUX -D -m 644 -t "$DESTDIR$MANDIR/man8" man/crio.8
 install $SELINUX -D -m 644 -t "$DESTDIR$BASHINSTALLDIR" completions/bash/crio
 install $SELINUX -D -m 644 -t "$DESTDIR$FISHINSTALLDIR" completions/fish/crio.fish
 install $SELINUX -D -m 644 -t "$DESTDIR$ZSHINSTALLDIR" completions/zsh/_crio
-install $SELINUX -D -m 644 -t "$DESTDIR$CONTAINERS_DIR" contrib/policy.json
 install $SELINUX -D -m 644 -t "$DESTDIR$SYSTEMDDIR" contrib/crio.service
 install $SELINUX -D -m 755 -t "$DESTDIR$BINDIR" bin/pinns
 install $SELINUX -D -m 755 -t "$DESTDIR$BINDIR" bin/crun
+
+if [ ! -f "$DESTDIR$CONTAINERS_DIR/policy.json" ]; then
+    install $SELINUX -D -m 644 -t "$DESTDIR$CONTAINERS_DIR" contrib/policy.json
+fi
+
+if [ ! -f "$DESTDIR$CONTAINERS_DIR/registries.conf" ]; then
+    install $SELINUX -D -m 644 -t "$DESTDIR$CONTAINERS_DIR" contrib/registries.conf
+fi
 
 # only install runc if it's not already in the path
 if ! command -v runc; then

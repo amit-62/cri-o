@@ -24,7 +24,7 @@ func (s *Server) Attach(ctx context.Context, req *types.AttachRequest) (*types.A
 }
 
 // Attach endpoint for streaming.Runtime
-func (s StreamService) Attach(ctx context.Context, containerID string, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (s StreamService) Attach(ctx context.Context, containerID string, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resizeChan <-chan remotecommand.TerminalSize) error {
 	ctx, span := log.StartSpan(ctx)
 	defer span.End()
 	c, err := s.runtimeServer.GetContainerFromShortID(ctx, containerID)
@@ -41,5 +41,5 @@ func (s StreamService) Attach(ctx context.Context, containerID string, inputStre
 		return fmt.Errorf("container is not created or running")
 	}
 
-	return s.runtimeServer.Runtime().AttachContainer(s.ctx, c, inputStream, outputStream, errorStream, tty, resize)
+	return s.runtimeServer.Runtime().AttachContainer(s.ctx, c, inputStream, outputStream, errorStream, tty, resizeChan)
 }

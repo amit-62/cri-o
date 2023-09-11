@@ -2,7 +2,7 @@
 
 function __fish_crio_no_subcommand --description 'Test if there has been any subcommand yet'
     for i in (commandline -opc)
-        if contains -- $i complete completion help h man markdown md config version wipe help h
+        if contains -- $i complete completion help h man markdown md config version wipe status config c containers container cs s info i help h
             return 1
         end
     end
@@ -49,6 +49,7 @@ complete -c crio -n '__fish_crio_no_subcommand' -f -l default-sysctls -r -d 'Sys
 complete -c crio -n '__fish_crio_no_subcommand' -f -l default-transport -r -d 'A prefix to prepend to image names that cannot be pulled as-is.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l default-ulimits -r -d 'Ulimits to apply to containers by default (name=soft:hard).'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l device-ownership-from-security-context -d 'Set devices\' uid/gid ownership from runAsUser/runAsGroup.'
+complete -c crio -n '__fish_crio_no_subcommand' -f -l disable-hostport-mapping -d 'If true, CRI-O would disable the hostport mapping.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l drop-infra-ctr -d 'Determines whether pods are created without an infra container, when the pod is not using a pod level PID namespace.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l enable-criu-support -d 'Enable CRIU integration, requires that the criu binary is available in $PATH.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l enable-metrics -d 'Enable metrics endpoint for the server on localhost:9090.'
@@ -97,6 +98,7 @@ complete -c crio -n '__fish_crio_no_subcommand' -f -l insecure-registry -r -d 'E
        be enabled for testing purposes**. For increased security, users should add
        their CA to their system\'s list of trusted CAs instead of using
        \'--insecure-registry\'.'
+complete -c crio -n '__fish_crio_no_subcommand' -f -l internal-repair -d 'If true, CRI-O will check if the container and image storage was corrupted after a sudden restart, and attempt to repair the storage if it was.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l internal-wipe -d 'Whether CRI-O should wipe containers after a reboot and images after an upgrade when the server starts. If set to false, one must run `crio wipe` to wipe the containers and images in these situations. This option is deprecated, and will be removed in the future.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l irqbalance-config-file -r -d 'The irqbalance service config file which is used by CRI-O.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l irqbalance-config-restore-file -r -d 'Determines if CRI-O should attempt to restore the irqbalance config at startup with the mask in this file. Use the \'disable\' value to disable the restore flow entirely.'
@@ -127,6 +129,7 @@ complete -c crio -n '__fish_crio_no_subcommand' -f -l pause-command -r -d 'Path 
 complete -c crio -n '__fish_crio_no_subcommand' -f -l pause-image -r -d 'Image which contains the pause executable.'
 complete -c crio -n '__fish_crio_no_subcommand' -l pause-image-auth-file -r -d 'Path to a config file containing credentials for --pause-image.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l pids-limit -r -d 'Maximum number of processes allowed in a container. This option is deprecated. The Kubelet flag \'--pod-pids-limit\' should be used instead.'
+complete -c crio -n '__fish_crio_no_subcommand' -f -l pinned-images -r -d 'A list of images that will be excluded from the kubelet\'s garbage collection.'
 complete -c crio -n '__fish_crio_no_subcommand' -l pinns-path -r -d 'The path to find the pinns binary, which is needed to manage namespace lifecycle. Will be searched for in $PATH if empty.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l profile -d 'Enable pprof remote profiler on localhost:6060.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l profile-cpu -r -d 'Write a pprof CPU profile to the provided path.'
@@ -139,10 +142,11 @@ complete -c crio -n '__fish_crio_no_subcommand' -l root -s r -r -d 'The CRI-O ro
 complete -c crio -n '__fish_crio_no_subcommand' -l runroot -r -d 'The CRI-O state directory.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l runtimes -r -d 'OCI runtimes, format is \'runtime_name:runtime_path:runtime_root:runtime_type:privileged_without_host_devices:runtime_config_path\'.'
 complete -c crio -n '__fish_crio_no_subcommand' -l seccomp-profile -r -d 'Path to the seccomp.json profile to be used as the runtime\'s default. If not specified, then the internal default seccomp profile will be used.'
-complete -c crio -n '__fish_crio_no_subcommand' -f -l seccomp-use-default-when-empty -d 'Use the default seccomp profile when an empty one is specified.'
+complete -c crio -n '__fish_crio_no_subcommand' -f -l seccomp-use-default-when-empty -d 'Use the default seccomp profile when an empty one is specified. This option is currently deprecated, and will be replaced by the SeccompDefault FeatureGate in Kubernetes.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l selinux -d 'Enable selinux support.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l separate-pull-cgroup -r -d '[EXPERIMENTAL] Pull in new cgroup.'
 complete -c crio -n '__fish_crio_no_subcommand' -l signature-policy -r -d 'Path to signature policy JSON file.'
+complete -c crio -n '__fish_crio_no_subcommand' -l signature-policy-dir -r -d 'Path to the root directory for namespaced signature policies. Must be an absolute path.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l stats-collection-period -r -d 'The number of seconds between collecting pod and container stats. If set to 0, the stats are collected on-demand instead.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l storage-driver -s s -r -d 'OCI storage driver.'
 complete -c crio -n '__fish_crio_no_subcommand' -f -l storage-opt -r -d 'OCI storage driver option.'
@@ -177,6 +181,9 @@ by CRI-O. This allows you to save you current configuration setup and then load
 it later with **--config**. Global options will modify the output.'
 complete -c crio -n '__fish_seen_subcommand_from config' -f -l default -d 'Output the default configuration (without taking into account any configuration options).'
 complete -c crio -n '__fish_seen_subcommand_from config' -f -l migrate-defaults -s m -r -d 'Migrate the default config from a specified version.
+
+    The migrate-defaults command has been deprecated and will be removed in the future.
+
     To run a config migration, just select the input config via the global
     \'--config,-c\' command line argument, for example:
     ```
@@ -195,5 +202,14 @@ complete -c crio -n '__fish_seen_subcommand_from version' -f -l verbose -s v -d 
 complete -c crio -n '__fish_seen_subcommand_from wipe' -f -l help -s h -d 'show help'
 complete -r -c crio -n '__fish_crio_no_subcommand' -a 'wipe' -d 'wipe CRI-O\'s container and image storage'
 complete -c crio -n '__fish_seen_subcommand_from wipe' -f -l force -s f -d 'force wipe by skipping the version check'
+complete -r -c crio -n '__fish_crio_no_subcommand' -a 'status' -d 'Display status information'
+complete -c crio -n '__fish_seen_subcommand_from status' -l socket -s s -r -d 'absolute path to the unix socket'
+complete -c crio -n '__fish_seen_subcommand_from config c' -f -l help -s h -d 'show help'
+complete -r -c crio -n '__fish_seen_subcommand_from status' -a 'config c' -d 'Show the configuration of CRI-O as a TOML string.'
+complete -c crio -n '__fish_seen_subcommand_from containers container cs s' -f -l help -s h -d 'show help'
+complete -r -c crio -n '__fish_seen_subcommand_from status' -a 'containers container cs s' -d 'Display detailed information about the provided container ID.'
+complete -c crio -n '__fish_seen_subcommand_from containers container cs s' -f -l id -s i -r -d 'the container ID'
+complete -c crio -n '__fish_seen_subcommand_from info i' -f -l help -s h -d 'show help'
+complete -r -c crio -n '__fish_seen_subcommand_from status' -a 'info i' -d 'Retrieve generic information about CRI-O, such as the cgroup and storage driver.'
 complete -c crio -n '__fish_seen_subcommand_from help h' -f -l help -s h -d 'show help'
 complete -r -c crio -n '__fish_crio_no_subcommand' -a 'help h' -d 'Shows a list of commands or help for one command'

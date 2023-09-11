@@ -22,7 +22,7 @@ func MakePod(p *entities.PodSpec, rt *libpod.Runtime) (_ *libpod.Pod, finalErr e
 	var createdPod *libpod.Pod
 	defer func() {
 		if finalErr != nil && createdPod != nil {
-			if err := rt.RemovePod(context.Background(), createdPod, true, true, nil); err != nil {
+			if _, err := rt.RemovePod(context.Background(), createdPod, true, true, nil); err != nil {
 				logrus.Errorf("Removing pod: %v", err)
 			}
 		}
@@ -165,6 +165,10 @@ func createPodOptions(p *specgen.PodSpecGenerator) ([]libpod.PodCreateOption, er
 	}
 
 	options = append(options, libpod.WithPodExitPolicy(p.ExitPolicy))
+	options = append(options, libpod.WithPodRestartPolicy(p.RestartPolicy))
+	if p.RestartRetries != nil {
+		options = append(options, libpod.WithPodRestartRetries(*p.RestartRetries))
+	}
 
 	return options, nil
 }
@@ -262,6 +266,10 @@ func MapSpec(p *specgen.PodSpecGenerator) (*specgen.SpecGenerator, error) {
 
 	if len(p.InfraConmonPidFile) > 0 {
 		p.InfraContainerSpec.ConmonPidFile = p.InfraConmonPidFile
+	}
+
+	if p.Sysctl != nil && len(p.Sysctl) > 0 {
+		p.InfraContainerSpec.Sysctl = p.Sysctl
 	}
 
 	p.InfraContainerSpec.Image = p.InfraImage

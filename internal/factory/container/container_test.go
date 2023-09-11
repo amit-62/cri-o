@@ -19,9 +19,9 @@ import (
 	. "github.com/onsi/gomega"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/syndtr/gocapability/capability"
+	validate "github.com/opencontainers/runtime-tools/validate/capabilities"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
-	kubeletTypes "k8s.io/kubernetes/pkg/kubelet/types"
+	kubeletTypes "k8s.io/kubelet/pkg/types"
 )
 
 var _ = t.Describe("Container", func() {
@@ -93,7 +93,7 @@ var _ = t.Describe("Container", func() {
 			sb, err := sandbox.New("sandboxID", "", "", "", "test",
 				make(map[string]string), make(map[string]string), "", "",
 				&types.PodSandboxMetadata{}, "", "", false, "", "", "",
-				[]*hostport.PortMapping{}, false, currentTime, "")
+				[]*hostport.PortMapping{}, false, currentTime, "", nil, nil)
 			Expect(err).To(BeNil())
 
 			image, err := sut.Image()
@@ -117,7 +117,7 @@ var _ = t.Describe("Container", func() {
 			Expect(currentTime).ToNot(BeNil())
 			Expect(sb).ToNot(BeNil())
 
-			err = sut.SpecAddAnnotations(context.Background(), sb, volumes, mountPoint, configStopSignal, &imageResult, false, false)
+			err = sut.SpecAddAnnotations(context.Background(), sb, volumes, mountPoint, configStopSignal, &imageResult, false, false, "foo", "")
 			Expect(err).To(BeNil())
 
 			Expect(sut.Spec().Config.Annotations[annotations.Image]).To(Equal(image))
@@ -135,7 +135,7 @@ var _ = t.Describe("Container", func() {
 			Expect(sut.Spec().Config.Annotations[annotations.ResolvPath]).To(Equal(sb.ResolvPath()))
 			Expect(sut.Spec().Config.Annotations[annotations.ContainerManager]).To(Equal(lib.ContainerManagerCRIO))
 			Expect(sut.Spec().Config.Annotations[annotations.MountPoint]).To(Equal(mountPoint))
-			Expect(sut.Spec().Config.Annotations[annotations.SeccompProfilePath]).To(Equal(sut.Config().Linux.SecurityContext.SeccompProfilePath))
+			Expect(sut.Spec().Config.Annotations[annotations.SeccompProfilePath]).To(Equal("foo"))
 			Expect(sut.Spec().Config.Annotations[annotations.Created]).ToNot(BeNil())
 			Expect(sut.Spec().Config.Annotations[annotations.Metadata]).To(Equal(string(metadataJSON)))
 			Expect(sut.Spec().Config.Annotations[annotations.Labels]).To(Equal(string(labelsJSON)))
@@ -582,7 +582,9 @@ var _ = t.Describe("Container", func() {
 			serverCaps := []string{}
 
 			Expect(sut.SpecSetupCapabilities(caps, serverCaps, false)).To(BeNil())
-			verifyCapValues(sut.Spec().Config.Process.Capabilities, len(capability.List())-1)
+			// `int(validate.LastCap())+1` represents the total number of `ALL` capabilities
+			// in the current environment, while `-1` indicates the removal of `CHOWN` from `ALL`.
+			verifyCapValues(sut.Spec().Config.Process.Capabilities, int(validate.LastCap())+1-1)
 		})
 		It("AddCapabilities one DropCapabilities ALL should add that one", func() {
 			caps := &types.Capability{

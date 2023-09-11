@@ -32,7 +32,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/syndtr/gocapability/capability"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
-	kubeletTypes "k8s.io/kubernetes/pkg/kubelet/types"
+	kubeletTypes "k8s.io/kubelet/pkg/types"
 )
 
 // Container is the main public container interface
@@ -104,7 +104,7 @@ type Container interface {
 	SpecAddMount(rspec.Mount)
 
 	// SpecAddAnnotations adds annotations to the spec.
-	SpecAddAnnotations(ctx context.Context, sandbox *sandbox.Sandbox, containerVolume []oci.ContainerVolume, mountPoint, configStopSignal string, imageResult *storage.ImageResult, isSystemd, systemdHasCollectMode bool) error
+	SpecAddAnnotations(ctx context.Context, sandbox *sandbox.Sandbox, containerVolume []oci.ContainerVolume, mountPoint, configStopSignal string, imageResult *storage.ImageResult, isSystemd, systemdHasCollectMode bool, seccompRef, platformRuntimePath string) error
 
 	// SpecAddDevices adds devices from the server config, and container CRI config
 	SpecAddDevices([]device.Device, []device.Device, bool, bool) error
@@ -162,7 +162,7 @@ func (c *container) SpecAddMount(r rspec.Mount) {
 }
 
 // SpecAddAnnotation adds all annotations to the spec
-func (c *container) SpecAddAnnotations(ctx context.Context, sb *sandbox.Sandbox, containerVolumes []oci.ContainerVolume, mountPoint, configStopSignal string, imageResult *storage.ImageResult, isSystemd, systemdHasCollectMode bool) (err error) {
+func (c *container) SpecAddAnnotations(ctx context.Context, sb *sandbox.Sandbox, containerVolumes []oci.ContainerVolume, mountPoint, configStopSignal string, imageResult *storage.ImageResult, isSystemd, systemdHasCollectMode bool, seccompRef, platformRuntimePath string) (err error) {
 	ctx, span := log.StartSpan(ctx)
 	defer span.End()
 	// Copied from k8s.io/kubernetes/pkg/kubelet/kuberuntime/labels.go
@@ -226,8 +226,10 @@ func (c *container) SpecAddAnnotations(ctx context.Context, sb *sandbox.Sandbox,
 	c.spec.AddAnnotation(annotations.ResolvPath, sb.ResolvPath())
 	c.spec.AddAnnotation(annotations.ContainerManager, lib.ContainerManagerCRIO)
 	c.spec.AddAnnotation(annotations.MountPoint, mountPoint)
-	c.spec.AddAnnotation(annotations.SeccompProfilePath, c.Config().Linux.SecurityContext.SeccompProfilePath)
+	c.spec.AddAnnotation(annotations.SeccompProfilePath, seccompRef)
 	c.spec.AddAnnotation(annotations.Created, created.Format(time.RFC3339Nano))
+	// for retrieving the runtime path for a given platform.
+	c.spec.AddAnnotation(crioann.PlatformRuntimePath, platformRuntimePath)
 
 	metadataJSON, err := json.Marshal(c.Config().Metadata)
 	if err != nil {
@@ -632,7 +634,7 @@ func (c *container) SpecSetupCapabilities(caps *types.Capability, defaultCaps ca
 
 	// Only add the default capabilities to the AddCapabilities list
 	// if neither add or drop are set to "ALL". If add is set to "ALL" it
-	// is a super set of the default capabilties. If drop is set to "ALL"
+	// is a super set of the default capabilities. If drop is set to "ALL"
 	// then we first want to clear the entire list (including defaults)
 	// so the user may selectively add *only* the capabilities they need.
 	if !(addAll || dropAll) {

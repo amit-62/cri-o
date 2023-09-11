@@ -1,134 +1,8 @@
 #!/usr/bin/env bash
 
-# Root directory of integration tests.
-INTEGRATION_ROOT=${INTEGRATION_ROOT:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")}
-
-# Test data path.
-TESTDATA="${INTEGRATION_ROOT}/testdata"
-
-# Root directory of the repository.
-CRIO_ROOT=${CRIO_ROOT:-$(
-    cd "$INTEGRATION_ROOT/.." || exit
-    pwd -P
-)}
-
-# Path to the crio binary.
-CRIO_BINARY=${CRIO_BINARY:-crio}
-CRIO_BINARY_PATH=${CRIO_BINARY_PATH:-${CRIO_ROOT}/bin/$CRIO_BINARY}
-
-# Path to the crio-status binary.
-CRIO_STATUS_BINARY_PATH=${CRIO_STATUS_BINARY_PATH:-${CRIO_ROOT}/bin/crio-status}
-
-# Path to the pinns binary
-PINNS_BINARY_PATH=${PINNS_BINARY_PATH:-${CRIO_ROOT}/bin/pinns}
-
-# Path to the pinns binary
-CRIOCTL_BINARY_PATH=${CRIOCTL_BINARY_PATH:-${CRIO_ROOT}/bin/crioctl}
-
-# Path of the crictl binary.
-CRICTL_PATH=$(command -v crictl || true)
-CRICTL_BINARY=${CRICTL_PATH:-/usr/bin/crictl}
-# Path of the conmon binary set as a variable to allow overwriting.
-CONMON_BINARY=${CONMON_BINARY:-$(command -v conmon)}
-# Cgroup for the conmon process
-CONTAINER_CONMON_CGROUP=${CONTAINER_CONMON_CGROUP:-pod}
-# Path of the default seccomp profile.
-CONTAINER_SECCOMP_PROFILE=${CONTAINER_SECCOMP_PROFILE:-${CRIO_ROOT}/vendor/github.com/containers/common/pkg/seccomp/seccomp.json}
-CONTAINER_UID_MAPPINGS=${CONTAINER_UID_MAPPINGS:-}
-CONTAINER_GID_MAPPINGS=${CONTAINER_GID_MAPPINGS:-}
-OVERRIDE_OPTIONS=${OVERRIDE_OPTIONS:-}
-# CNI path
-CONTAINER_CNI_PLUGIN_DIR=${CONTAINER_CNI_PLUGIN_DIR:-/opt/cni/bin}
-# Runtime
-CONTAINER_DEFAULT_RUNTIME=${CONTAINER_DEFAULT_RUNTIME:-runc}
-RUNTIME_BINARY_PATH=$(command -v "$CONTAINER_DEFAULT_RUNTIME")
-RUNTIME_TYPE=${RUNTIME_TYPE:-oci}
-PRIVILEGED_WITHOUT_HOST_DEVICES=${PRIVILEGED_WITHOUT_HOST_DEVICES:-}
-RUNTIME_CONFIG_PATH=${RUNTIME_CONFIG_PATH:-""}
-# Path of the apparmor_parser binary.
-APPARMOR_PARSER_BINARY=${APPARMOR_PARSER_BINARY:-/sbin/apparmor_parser}
-# Path of the apparmor profile for test.
-APPARMOR_TEST_PROFILE_PATH=${APPARMOR_TEST_PROFILE_PATH:-${TESTDATA}/apparmor_test_deny_write}
-# Path of the apparmor profile for unloading crio-default.
-FAKE_CRIO_DEFAULT_PROFILE_PATH=${FAKE_CRIO_DEFAULT_PROFILE_PATH:-${TESTDATA}/fake_crio_default}
-# Name of the default apparmor profile.
-FAKE_CRIO_DEFAULT_PROFILE_NAME=${FAKE_CRIO_DEFAULT_PROFILE_NAME:-crio-default-fake}
-# Name of the apparmor profile for test.
-APPARMOR_TEST_PROFILE_NAME=${APPARMOR_TEST_PROFILE_NAME:-apparmor-test-deny-write}
-# Path of boot config.
-BOOT_CONFIG_FILE_PATH=${BOOT_CONFIG_FILE_PATH:-/boot/config-$(uname -r)}
-# Path of apparmor parameters file.
-APPARMOR_PARAMETERS_FILE_PATH=${APPARMOR_PARAMETERS_FILE_PATH:-/sys/module/apparmor/parameters/enabled}
-# Path of the copyimg binary.
-COPYIMG_BINARY=${COPYIMG_BINARY:-${CRIO_ROOT}/test/copyimg/copyimg}
-# Path of tests artifacts.
-ARTIFACTS_PATH=${ARTIFACTS_PATH:-${CRIO_ROOT}/.artifacts}
-# Path of the checkseccomp binary.
-CHECKSECCOMP_BINARY=${CHECKSECCOMP_BINARY:-${CRIO_ROOT}/test/checkseccomp/checkseccomp}
-# Path of the checkcriu binary.
-CHECKCRIU_BINARY=${CHECKCRIU_BINARY:-${CRIO_ROOT}/test/checkcriu/checkcriu}
-# The default log directory where all logs will go unless directly specified by the kubelet
-DEFAULT_LOG_PATH=${DEFAULT_LOG_PATH:-/var/log/crio/pods}
-# Cgroup manager to be used
-CONTAINER_CGROUP_MANAGER=${CONTAINER_CGROUP_MANAGER:-systemd}
-# Image volumes handling
-CONTAINER_IMAGE_VOLUMES=${CONTAINER_IMAGE_VOLUMES:-mkdir}
-# Container pids limit
-CONTAINER_PIDS_LIMIT=${CONTAINER_PIDS_LIMIT:-1024}
-# Log size max limit
-CONTAINER_LOG_SIZE_MAX=${CONTAINER_LOG_SIZE_MAX:--1}
-# Stream Port
-STREAM_PORT=${STREAM_PORT:-10010}
-# Metrics Port
-CONTAINER_METRICS_PORT=${CONTAINER_METRICS_PORT:-9090}
-
-POD_IPV4_CIDR="10.88.0.0/16"
-# shellcheck disable=SC2034
-POD_IPV4_CIDR_START="10.88."
-POD_IPV4_DEF_ROUTE="0.0.0.0/0"
-
-POD_IPV6_CIDR="1100:200::/24"
-# shellcheck disable=SC2034
-POD_IPV6_CIDR_START="1100:2"
-POD_IPV6_DEF_ROUTE="1100:200::1/24"
-
-IMAGES=(
-    registry.k8s.io/pause:3.6
-    quay.io/crio/busybox:latest
-    quay.io/crio/fedora-ping:latest
-    quay.io/crio/image-volume-test:latest
-    quay.io/crio/oom:latest
-    quay.io/crio/redis:alpine
-    quay.io/crio/stderr-test:latest
-    quay.io/crio/etc-permission:latest
-)
-
-function img2dir() {
-    local dir
-    dir=$(echo "$@" | sed -e 's|^.*/||' -e 's/:.*$//' -e 's/-/_/' -e 's/$/-image/')
-    echo "$ARTIFACTS_PATH/$dir"
-}
-
-function get_img() {
-    local img="docker://$1" dir
-    dir="$(img2dir "$img")"
-
-    if ! [ -d "$dir" ]; then
-        mkdir -p "$dir"
-        if ! "$COPYIMG_BINARY" \
-            --import-from="$img" \
-            --export-to="dir:$dir" \
-            --signature-policy="$INTEGRATION_ROOT"/policy.json; then
-            echo "Error pulling $img" >&2
-            rm -fr "$dir"
-            exit 1
-        fi
-    fi
-}
-
-for img in "${IMAGES[@]}"; do
-    get_img "$img"
-done
+. common.sh
+bats_require_minimum_version 1.9.0
+export BATS_VERBOSE_RUN=1
 
 function setup_test() {
     TESTDIR=$(mktemp -d)
@@ -163,7 +37,7 @@ function setup_test() {
     CRIO_CONFIG_DIR="$TESTDIR/crio.conf.d"
     mkdir "$CRIO_CONFIG_DIR"
     CRIO_CONFIG="$TESTDIR/crio.conf"
-    CRIO_CUSTOM_CONFIG="$CRIO_CONFIG_DIR/crio-custom.conf"
+    CRIO_CUSTOM_CONFIG="$CRIO_CONFIG_DIR/00-crio-custom.conf"
     CRIO_CNI_CONFIG="$TESTDIR/cni/net.d/"
     CRIO_LOG="$TESTDIR/crio.log"
 
@@ -293,7 +167,13 @@ function setup_crio() {
         --apparmor-profile "$apparmor" \
         --cgroup-manager "$CONTAINER_CGROUP_MANAGER" \
         --conmon "$CONMON_BINARY" \
+        --container-attach-socket-dir "$CONTAINER_ATTACH_SOCKET_DIR" \
+        --container-exits-dir "$CONTAINER_EXITS_DIR" \
         --listen "$CRIO_SOCKET" \
+        --irqbalance-config-file "$IRQBALANCE_CONFIG_FILE" \
+        --irqbalance-config-restore-file "$IRQBALANCE_CONFIG_RESTORE_FILE" \
+        --signature-policy "$SIGNATURE_POLICY" \
+        --signature-policy-dir "$SIGNATURE_POLICY_DIR" \
         --registry "quay.io" \
         --registry "docker.io" \
         -r "$TESTDIR/crio" \
@@ -307,15 +187,9 @@ function setup_crio() {
         -d "" \
         $OVERRIDE_OPTIONS \
         config >"$CRIO_CUSTOM_CONFIG"
-    sed -r -e 's/^(#)?root =/root =/g' -e 's/^(#)?runroot =/runroot =/g' -e 's/^(#)?storage_driver =/storage_driver =/g' -e '/^(#)?storage_option = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?registries = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?default_ulimits = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -i "$CRIO_CONFIG"
-    sed -r -e 's/^(#)?root =/root =/g' -e 's/^(#)?runroot =/runroot =/g' -e 's/^(#)?storage_driver =/storage_driver =/g' -e '/^(#)?storage_option = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?registries = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?default_ulimits = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -i "$CRIO_CUSTOM_CONFIG"
     # make sure we don't run with nodev, or else mounting a readonly rootfs will fail: https://github.com/cri-o/cri-o/issues/1929#issuecomment-474240498
     sed -r -e 's/nodev(,)?//g' -i "$CRIO_CONFIG"
     sed -r -e 's/nodev(,)?//g' -i "$CRIO_CUSTOM_CONFIG"
-    sed -i -e 's;\(container_exits_dir =\) \(.*\);\1 "'"$CONTAINER_EXITS_DIR"'";g' "$CRIO_CONFIG"
-    sed -i -e 's;\(container_exits_dir =\) \(.*\);\1 "'"$CONTAINER_EXITS_DIR"'";g' "$CRIO_CUSTOM_CONFIG"
-    sed -i -e 's;\(container_attach_socket_dir =\) \(.*\);\1 "'"$CONTAINER_ATTACH_SOCKET_DIR"'";g' "$CRIO_CONFIG"
-    sed -i -e 's;\(container_attach_socket_dir =\) \(.*\);\1 "'"$CONTAINER_ATTACH_SOCKET_DIR"'";g' "$CRIO_CUSTOM_CONFIG"
     prepare_network_conf
 }
 
@@ -335,9 +209,9 @@ function check_images() {
 
     # these two variables are used by a few tests
     eval "$(jq -r '.images[] |
-        select(.repoTags[0] == "quay.io/crio/redis:alpine") |
+        select(.repoTags[0] == "quay.io/crio/fedora-crio-ci:latest") |
         "REDIS_IMAGEID=" + .id + "\n" +
-	"REDIS_IMAGEREF=" + .repoDigests[0]' <<<"$json")"
+	"REDIS_IMAGEREF=" + .id' <<<"$json")"
 }
 
 function start_crio_no_setup() {
@@ -555,7 +429,7 @@ function cleanup_network_conf() {
 }
 
 function reload_crio() {
-    kill -HUP $CRIO_PID
+    kill -HUP "$CRIO_PID"
 }
 
 function wait_for_log() {
@@ -579,12 +453,6 @@ function wait_for_log() {
 function replace_config() {
     sed -i -e 's;\('"$1"' = "\).*\("\);\1'"$2"'\2;' "$CRIO_CONFIG"
     sed -i -e 's;\('"$1"' = "\).*\("\);\1'"$2"'\2;' "$CRIO_CUSTOM_CONFIG"
-}
-
-# Fails the current test, providing the error given.
-function fail() {
-    echo "FAIL [${BATS_TEST_NAME} ${BASH_SOURCE[0]##*/}:${BASH_LINENO[0]}] $*" >&2
-    exit 1
 }
 
 # tests whether the node is configured to use cgroupv2
@@ -627,6 +495,22 @@ function set_swap_fields_given_cgroup_version() {
     if is_cgroup_v2; then
         export CGROUP_MEM_SWAP_FILE="/sys/fs/cgroup/memory.swap.max"
         export CGROUP_MEM_FILE="/sys/fs/cgroup/memory.max"
+    fi
+}
+
+function set_container_pod_cgroup_root() {
+    controller="$1"
+    ctr_id="$2"
+    CGROUP_ROOT="/sys/fs/cgroup"
+    if is_cgroup_v2; then
+        controller=""
+    fi
+
+    export POD_CGROUP="$CGROUP_ROOT"/"$controller"/pod_123.slice/pod_123-456.slice
+    export CTR_CGROUP="$POD_CGROUP"/crio-"$ctr_id".scope
+    if [ "$CONTAINER_CGROUP_MANAGER" != "systemd" ]; then
+        export POD_CGROUP="$CGROUP_ROOT"/"$controller"/pod_123-456
+        export CTR_CGROUP="$POD_CGROUP"/crio-"$ctr_id"
     fi
 }
 
@@ -681,12 +565,8 @@ function has_criu() {
         skip "Checkpoint/Restore with pods only works in runc."
     fi
 
-    if [ ! -e "$(command -v criu)" ]; then
-        skip "CRIU binary not found"
-    fi
-
     if ! "$CHECKCRIU_BINARY"; then
-        skip "CRIU too old. At least 3.16 needed."
+        skip "CRIU check failed"
     fi
 }
 

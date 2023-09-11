@@ -58,15 +58,23 @@ SOURCE_DATE_EPOCH ?= $(shell date +%s)
 GO_MD2MAN ?= ${BUILD_BIN_PATH}/go-md2man
 GINKGO := ${BUILD_BIN_PATH}/ginkgo
 MOCKGEN := ${BUILD_BIN_PATH}/mockgen
+MOCKGEN_VERSION := 1.6.0
 GOLANGCI_LINT := ${BUILD_BIN_PATH}/golangci-lint
+GOLANGCI_LINT_VERSION := v1.53.2
 GO_MOD_OUTDATED := ${BUILD_BIN_PATH}/go-mod-outdated
+GO_MOD_OUTDATED_VERSION := 0.9.0
+GOSEC := ${BUILD_BIN_PATH}/gosec
+GOSEC_VERSION := 2.15.0
 RELEASE_NOTES := ${BUILD_BIN_PATH}/release-notes
 ZEITGEIST := ${BUILD_BIN_PATH}/zeitgeist
 ZEITGEIST_VERSION := v0.4.1
+RELEASE_NOTES_VERSION := v0.15.1
 BOM := ${BUILD_BIN_PATH}/bom
 BOM_VERSION := v0.5.1
 SHFMT := ${BUILD_BIN_PATH}/shfmt
+SHFMT_VERSION := v3.6.0
 SHELLCHECK := ${BUILD_BIN_PATH}/shellcheck
+SHELLCHECK_VERSION := v0.9.0
 BATS_FILES := $(wildcard test/*.bats)
 
 ifeq ($(shell bash -c '[[ `command -v git` && `git rev-parse --git-dir 2>/dev/null` ]] && echo true'), true)
@@ -85,21 +93,11 @@ CROSS_BUILD_TARGETS := \
 	bin/crio.cross.darwin.amd64 \
 	bin/crio.cross.linux.amd64
 
-# If GOPATH not specified, use one in the local directory
-ifeq ($(GOPATH),)
-export GOPATH := $(CURDIR)/_output
-unexport GOBIN
-endif
-GOPKGDIR := $(GOPATH)/src/$(PROJECT)
-GOPKGBASEDIR := $(shell dirname "$(GOPKGDIR)")
 GO_FILES := $(shell find . -type f -name '*.go' -not -name '*_test.go')
 
 # Some of the packages use the golang testing infra in end-to-end tests.
 # These can't be run as unit tests so ginkgo should skip them.
 GINKGO_SKIP_PACKAGES = test/nri
-
-# Update VPATH so make finds .gopathok
-VPATH := $(VPATH):$(GOPATH)
 
 # Set DEBUG=1 to enable debug symbols in binaries
 DEBUG ?= 0
@@ -109,8 +107,6 @@ else
 GCFLAGS = -gcflags '-N -l'
 endif
 
-DEFAULTS_PATH := ""
-
 DATE_FMT = +'%Y-%m-%dT%H:%M:%SZ'
 ifdef SOURCE_DATE_EPOCH
     BUILD_DATE ?= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" "$(DATE_FMT)" 2>/dev/null || date -u -r "$(SOURCE_DATE_EPOCH)" "$(DATE_FMT)" 2>/dev/null || date -u "$(DATE_FMT)")
@@ -119,7 +115,6 @@ else
 endif
 
 BASE_LDFLAGS = ${SHRINKFLAGS} \
-	-X ${PROJECT}/internal/pkg/criocli.DefaultsPath=${DEFAULTS_PATH} \
 	-X ${PROJECT}/internal/version.buildDate=${BUILD_DATE}
 
 GO_LDFLAGS = -ldflags '${BASE_LDFLAGS} ${EXTRA_LDFLAGS}'
@@ -143,16 +138,8 @@ help:
 # Dummy target for marking pattern rules phony
 .explicit_phony:
 
-.gopathok:
-ifeq ("$(wildcard $(GOPKGDIR))","")
-	mkdir -p "$(GOPKGBASEDIR)"
-	ln -s "$(CURDIR)" "$(GOPKGDIR)"
-endif
-	if [ ! -d "$(GOPATH)" ]; then mkdir -p $(GOPATH); fi
-	touch "$(GOPATH)/.gopathok"
-
 # See also: .github/workflows/verify.yml.
-lint: .gopathok ${GOLANGCI_LINT}
+lint:  ${GOLANGCI_LINT}
 	${GOLANGCI_LINT} version
 	${GOLANGCI_LINT} linters
 	GL_DEBUG=gocritic ${GOLANGCI_LINT} run
@@ -185,28 +172,28 @@ check-nri-bats-tests: test/nri/nri.test
 bin/pinns:
 	$(MAKE) -C pinns
 
-test/copyimg/copyimg: $(GO_FILES) .gopathok
+test/copyimg/copyimg: $(GO_FILES)
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/test/copyimg
 
-test/checkseccomp/checkseccomp: $(GO_FILES) .gopathok
+test/checkseccomp/checkseccomp: $(GO_FILES)
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/test/checkseccomp
 
-test/checkcriu/checkcriu: $(GO_FILES) .gopathok
+test/checkcriu/checkcriu: $(GO_FILES)
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/test/checkcriu
 
-test/nri/nri.test: $(wildcard test/nri/*.go) .gopathok
+test/nri/nri.test: $(wildcard test/nri/*.go)
 	$(GO) test --tags "test $(BUILDTAGS)" -c $(PROJECT)/test/nri -o $@
 
-bin/crio: $(GO_FILES) .gopathok
+bin/crio: $(GO_FILES)
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/cmd/crio
 
-bin/crio-status: $(GO_FILES) .gopathok
+bin/crio-status: $(GO_FILES)
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/cmd/crio-status
 
 build-static:
-	$(CONTAINER_RUNTIME) run --rm --privileged -ti -v /:/mnt \
+	$(CONTAINER_RUNTIME) run --network=host --rm --privileged -ti -v /:/mnt \
 		$(NIX_IMAGE) cp -rfT /nix /mnt/nix
-	$(CONTAINER_RUNTIME) run --rm --privileged -ti -v /nix:/nix -v ${PWD}:${PWD} -w ${PWD} \
+	$(CONTAINER_RUNTIME) run --network=host --rm --privileged -ti -v /nix:/nix -v ${PWD}:${PWD} -w ${PWD} \
 		$(NIX_IMAGE) nix --print-build-logs --option cores 8 --option max-jobs 8 build --file nix/
 	mkdir -p bin
 	cp -r result/bin bin/static
@@ -228,9 +215,6 @@ dependencies: ${GO_MOD_OUTDATED}
 		--output-path ${BUILD_PATH}/dependencies
 
 clean:
-ifneq ($(GOPATH),)
-	rm -f "$(GOPATH)/.gopathok"
-endif
 	rm -rf _output
 	rm -f docs/*.5 docs/*.8
 	rm -fr test/testdata/redis-image
@@ -250,7 +234,7 @@ endif
 local-cross:
 	@$(MAKE) --keep-going $(CROSS_BUILD_TARGETS)
 
-bin/crio.cross.%: .gopathok .explicit_phony
+bin/crio.cross.%:  .explicit_phony
 	@echo "==> make $@"; \
 	TARGET="$*"; \
 	GOOS="$${TARGET%%.*}" \
@@ -261,56 +245,61 @@ nixpkgs:
 	@nix run -f channel:nixpkgs-unstable nix-prefetch-git -- \
 		--no-deepClone https://github.com/nixos/nixpkgs > nix/nixpkgs.json
 
-
 define go-build
 	$(shell cd `pwd` && $(GO_BUILD) -o $(BUILD_BIN_PATH)/$(shell basename $(1)) $(1))
 	@echo > /dev/null
 endef
 
-${GO_MD2MAN}:
+$(BUILD_BIN_PATH):
+	mkdir -p $(BUILD_BIN_PATH)
+
+$(GO_MD2MAN):
 	$(call go-build,./vendor/github.com/cpuguy83/go-md2man)
 
-${GINKGO}:
+$(GINKGO):
 	$(call go-build,./vendor/github.com/onsi/ginkgo/v2/ginkgo)
 
-${MOCKGEN}:
-	$(call go-build,./vendor/github.com/golang/mock/mockgen)
+define curl_to
+    curl -sSfL --retry 5 --retry-delay 3 "$(1)" -o $(2)
+	chmod +x $(2)
+endef
 
-${RELEASE_NOTES}:
-	$(call go-build,./vendor/k8s.io/release/cmd/release-notes)
+$(RELEASE_NOTES): $(BUILD_BIN_PATH)
+	$(call curl_to,https://github.com/kubernetes/release/releases/download/$(RELEASE_NOTES_VERSION)/release-notes-linux-amd64,$(RELEASE_NOTES))
 
-${SHFMT}:
-	$(call go-build,./vendor/mvdan.cc/sh/v3/cmd/shfmt)
+$(SHFMT): $(BUILD_BIN_PATH)
+	$(call curl_to,https://github.com/mvdan/sh/releases/download/$(SHFMT_VERSION)/shfmt_$(SHFMT_VERSION)_linux_amd64,$(SHFMT))
 
-${GO_MOD_OUTDATED}:
-	$(call go-build,./vendor/github.com/psampaz/go-mod-outdated)
+$(ZEITGEIST): $(BUILD_BIN_PATH)
+	$(call curl_to,https://github.com/kubernetes-sigs/zeitgeist/releases/download/$(ZEITGEIST_VERSION)/zeitgeist_$(ZEITGEIST_VERSION:v%=%)_linux_amd64,$(BUILD_BIN_PATH)/zeitgeist)
 
-${ZEITGEIST}:
-	mkdir -p $(BUILD_BIN_PATH)
-	curl -sSfL -o $(BUILD_BIN_PATH)/zeitgeist \
-		https://github.com/kubernetes-sigs/zeitgeist/releases/download/$(ZEITGEIST_VERSION)/zeitgeist_$(ZEITGEIST_VERSION:v%=%)_linux_amd64
-	chmod +x $(BUILD_BIN_PATH)/zeitgeist
+$(BOM): $(BUILD_BIN_PATH)
+	$(call curl_to,https://github.com/kubernetes-sigs/bom/releases/download/$(BOM_VERSION)/bom-amd64-linux,$(BUILD_BIN_PATH)/bom)
 
-${BOM}:
-	mkdir -p $(BUILD_BIN_PATH)
-	curl -sSfL -o $(BUILD_BIN_PATH)/bom \
-		https://github.com/kubernetes-sigs/bom/releases/download/$(BOM_VERSION)/bom-amd64-linux
-	chmod +x $(BUILD_BIN_PATH)/bom
+$(MOCKGEN): $(BUILD_BIN_PATH)
+	$(call curl_to,https://github.com/golang/mock/releases/download/v$(MOCKGEN_VERSION)/mock_$(MOCKGEN_VERSION)_linux_amd64.tar.gz,$(BUILD_BIN_PATH)/mockgen.tar.gz)
+	tar xf $(BUILD_BIN_PATH)/mockgen.tar.gz --strip-components=1 -C $(BUILD_BIN_PATH)
 
-bom: ${BOM}
+$(GO_MOD_OUTDATED): $(BUILD_BIN_PATH)
+	$(call curl_to,https://github.com/psampaz/go-mod-outdated/releases/download/v$(GO_MOD_OUTDATED_VERSION)/go-mod-outdated_$(GO_MOD_OUTDATED_VERSION)_Linux_x86_64.tar.gz,$(BUILD_BIN_PATH)/gmo.tar.gz)
+	tar xf $(BUILD_BIN_PATH)/gmo.tar.gz -C $(BUILD_BIN_PATH)
 
-${GOLANGCI_LINT}:
-	export VERSION=v1.51.1 \
+$(GOSEC): $(BUILD_BIN_PATH)
+	$(call curl_to,https://github.com/securego/gosec/releases/download/v$(GOSEC_VERSION)/gosec_$(GOSEC_VERSION)_linux_amd64.tar.gz,$(BUILD_BIN_PATH)/gosec.tar.gz)
+	tar xf $(BUILD_BIN_PATH)/gosec.tar.gz -C $(BUILD_BIN_PATH)
+
+bom: $(BOM)
+
+$(GOLANGCI_LINT):
+	export VERSION=$(GOLANGCI_LINT_VERSION) \
 		URL=https://raw.githubusercontent.com/golangci/golangci-lint \
 		BINDIR=${BUILD_BIN_PATH} && \
 	curl -sSfL $$URL/$$VERSION/install.sh | sh -s $$VERSION
 
-${SHELLCHECK}:
-	mkdir -p ${BUILD_BIN_PATH} && \
-	VERSION=v0.8.0 \
-	URL=https://github.com/koalaman/shellcheck/releases/download/$$VERSION/shellcheck-$$VERSION.linux.x86_64.tar.xz \
-	SHA256SUM=f4bce23c11c3919c1b20bcb0f206f6b44c44e26f2bc95f8aa708716095fa0651 && \
-	curl -sSfL $$URL | tar xfJ - -C ${BUILD_BIN_PATH} --strip 1 shellcheck-$$VERSION/shellcheck && \
+$(SHELLCHECK): $(BUILD_BIN_PATH)
+	URL=https://github.com/koalaman/shellcheck/releases/download/$(SHELLCHECK_VERSION)/shellcheck-$(SHELLCHECK_VERSION).linux.x86_64.tar.xz \
+	SHA256SUM=7087178d54de6652b404c306233264463cb9e7a9afeb259bb663cc4dbfd64149 && \
+	curl -sSfL $$URL | tar xfJ - -C ${BUILD_BIN_PATH} --strip 1 shellcheck-$(SHELLCHECK_VERSION)/shellcheck && \
 	sha256sum ${SHELLCHECK} | grep -q $$SHA256SUM
 
 vendor: export GOSUMDB :=
@@ -355,6 +344,12 @@ mockgen: \
 	mock-oci \
 	mock-image-types \
 	mock-ocicni-types
+
+mock-containereventserver: ${MOCKGEN}
+	${MOCKGEN} \
+		-package containereventservermock \
+		-destination ${MOCK_PATH}/containereventserver/containereventserver.go \
+		k8s.io/cri-api/pkg/apis/runtime/v1 RuntimeService_GetContainerEventsServer
 
 mock-containerstorage: ${MOCKGEN}
 	${MOCKGEN} \
@@ -412,11 +407,11 @@ test-binaries: test/copyimg/copyimg test/checkseccomp/checkseccomp test/checkcri
 MANPAGES_MD := $(wildcard docs/*.md)
 MANPAGES    := $(MANPAGES_MD:%.md=%)
 
-docs/%.5: docs/%.5.md .gopathok ${GO_MD2MAN}
+docs/%.5: docs/%.5.md  ${GO_MD2MAN}
 	(${GO_MD2MAN} -in $< -out $@.tmp && touch $@.tmp && mv $@.tmp $@) || \
 		(${GO_MD2MAN} -in $< -out $@.tmp && touch $@.tmp && mv $@.tmp $@)
 
-docs/%.8: docs/%.8.md .gopathok ${GO_MD2MAN}
+docs/%.8: docs/%.8.md  ${GO_MD2MAN}
 	(${GO_MD2MAN} -in $< -out $@.tmp && touch $@.tmp && mv $@.tmp $@) || \
 		(${GO_MD2MAN} -in $< -out $@.tmp && touch $@.tmp && mv $@.tmp $@)
 
@@ -448,9 +443,13 @@ bundle-test-e2e:
 bundle-test-e2e-conmonrs:
 	sudo contrib/bundle/test-e2e --use-conmonrs
 
+bundle-test-kubernetes:
+	cd contrib/bundle && vagrant up
+
 bundles: ${BOM}
 	contrib/bundle/build amd64
 	contrib/bundle/build arm64
+	contrib/bundle/build ppc64le
 
 get-script:
 	sed -i '/# INCLUDE/q' scripts/get
@@ -459,7 +458,13 @@ get-script:
 verify-dependencies: ${ZEITGEIST}
 	${BUILD_BIN_PATH}/zeitgeist validate --local-only --base-path . --config dependencies.yaml
 
-install: .gopathok install.bin install.man install.completions install.systemd install.config
+verify-gosec: ${GOSEC}
+	${BUILD_BIN_PATH}/gosec -exclude-dir=test -exclude-dir=_output -severity high -confidence high -exclude G304,G108 ./...
+
+verify-govulncheck:
+	./hack/govulncheck.sh
+
+install: install.bin install.man install.completions install.systemd install.config
 
 install.bin-nobuild:
 	install ${SELINUXOPT} -D -m 755 bin/crio $(BINDIR)/crio
@@ -565,6 +570,7 @@ metrics-exporter: bin/metrics-exporter
 	default \
 	docs \
 	docs-validation \
+	gosec \
 	help \
 	install \
 	lint \
