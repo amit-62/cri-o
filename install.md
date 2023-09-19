@@ -337,7 +337,6 @@ apt install -y  \
   btrfs-tools \
   containers-common \
   git \
-  golang-go \
   libassuan-dev \
   libdevmapper-dev \
   libglib2.0-dev \
@@ -364,7 +363,6 @@ apt-get update -qq && apt-get install -y \
   libbtrfs-dev \
   containers-common \
   git \
-  golang-go \
   libassuan-dev \
   libdevmapper-dev \
   libglib2.0-dev \
@@ -584,7 +582,7 @@ registries = []
 ```
 <!-- markdownlint-enable MD013 -->
 
-For more information about this file see [registries.conf(5)](https://github.com/containers/image/blob/master/docs/containers-registries.conf.5.md).
+For more information about this file see [registries.conf(5)](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md).
 
 ### Optional - Modify verbosity of logs
 

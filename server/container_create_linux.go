@@ -213,11 +213,7 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 	}
 	images, err := s.StorageImageServer().ResolveNames(s.config.SystemContext, image)
 	if err != nil {
-		if err == storage.ErrCannotParseImageID {
-			images = append(images, image)
-		} else {
-			return nil, err
-		}
+		return nil, err
 	}
 
 	// Get imageName and imageRef that are later requested in container status
@@ -321,7 +317,8 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 	cgroup2RW := node.CgroupIsV2() && sb.Annotations()[crioann.Cgroup2RWAnnotation] == "true"
 
 	s.resourceStore.SetStageForResource(ctx, ctr.Name(), "container volume configuration")
-	containerVolumes, ociMounts, err := addOCIBindMounts(ctx, ctr, mountLabel, s.config.RuntimeConfig.BindMountPrefix, s.config.AbsentMountSourcesToReject, maybeRelabel, skipRelabel, cgroup2RW, s.Config().Root)
+	idMapSupport := s.Runtime().RuntimeSupportsIDMap(sb.RuntimeHandler())
+	containerVolumes, ociMounts, err := addOCIBindMounts(ctx, ctr, mountLabel, s.config.RuntimeConfig.BindMountPrefix, s.config.AbsentMountSourcesToReject, maybeRelabel, skipRelabel, cgroup2RW, idMapSupport, s.Config().Root)
 	if err != nil {
 		return nil, err
 	}
@@ -382,6 +379,11 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrfactory.Cont
 	// Get blockio class
 	if s.Config().BlockIO().Enabled() {
 		if blockioClass, err := blockio.ContainerClassFromAnnotations(metadata.Name, containerConfig.Annotations, sb.Annotations()); blockioClass != "" && err == nil {
+			if s.Config().BlockIO().ReloadRequired() {
+				if err := s.Config().BlockIO().Reload(); err != nil {
+					log.Warnf(ctx, "Reconfiguring blockio for container %s failed: %v", containerID, err)
+				}
+			}
 			if linuxBlockIO, err := blockio.OciLinuxBlockIO(blockioClass); err == nil {
 				if specgen.Config.Linux.Resources == nil {
 					specgen.Config.Linux.Resources = &rspec.LinuxResources{}
@@ -919,7 +921,7 @@ func clearReadOnly(m *rspec.Mount) {
 	m.Options = append(m.Options, "rw")
 }
 
-func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel, bindMountPrefix string, absentMountSourcesToReject []string, maybeRelabel, skipRelabel, cgroup2RW bool, storageRoot string) ([]oci.ContainerVolume, []rspec.Mount, error) {
+func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel, bindMountPrefix string, absentMountSourcesToReject []string, maybeRelabel, skipRelabel, cgroup2RW, idMapSupport bool, storageRoot string) ([]oci.ContainerVolume, []rspec.Mount, error) {
 	ctx, span := log.StartSpan(ctx)
 	defer span.End()
 
@@ -1064,12 +1066,17 @@ func addOCIBindMounts(ctx context.Context, ctr ctrfactory.Container, mountLabel,
 			SelinuxRelabel: m.SelinuxRelabel,
 		})
 
+		uidMappings := getOCIMappings(m.UidMappings)
+		gidMappings := getOCIMappings(m.GidMappings)
+		if (uidMappings != nil || gidMappings != nil) && !idMapSupport {
+			return nil, nil, fmt.Errorf("idmap mounts specified but OCI runtime does not support them. Perhaps the OCI runtime is too old")
+		}
 		ociMounts = append(ociMounts, rspec.Mount{
 			Source:      src,
 			Destination: dest,
 			Options:     options,
-			UIDMappings: getOCIMappings(m.UidMappings),
-			GIDMappings: getOCIMappings(m.GidMappings),
+			UIDMappings: uidMappings,
+			GIDMappings: gidMappings,
 		})
 	}
 
